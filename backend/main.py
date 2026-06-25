@@ -1,21 +1,18 @@
 """
-main.py — FastAPI application entry point.
+main.py - FastAPI application entry point.
 
-LIFESPAN PATTERN (replaces deprecated @app.on_event):
-FastAPI 0.93+ uses lifespan context managers for startup/shutdown logic.
-This is cleaner than on_event handlers and works properly with async.
-
-STARTUP SEQUENCE:
+Startup sequence:
 1. Configure structured logging (loguru)
 2. Warm up singletons (VectorStoreManager, RAGPipeline, RagasRunner)
-   — these load the 90MB embedding model; do it at startup, not per-request
-3. Verify DB connectivity
-4. Log config summary
+3. Verify DB connectivity (non-fatal - app starts even if DB is unavailable)
+4. Log configuration summary
 
-SHUTDOWN:
-1. Dispose DB connection pool (graceful in-flight request completion)
+The app starts successfully even when environment variables are missing.
+Features degrade gracefully: endpoints that require unconfigured services
+return HTTP 503 with a clear message rather than crashing the process.
 """
 
+import os
 import sys
 from contextlib import asynccontextmanager
 
@@ -26,37 +23,26 @@ from loguru import logger
 from sqlalchemy import text
 
 from backend.config import get_settings
-from backend.database import engine, get_db_context
-from backend.rag.pipeline import get_pipeline
-from backend.rag.vectorstore import get_vector_store
-from backend.evaluator.ragas_runner import get_ragas_runner
+from backend.database import get_db_context, get_engine
 
 settings = get_settings()
 
+# Vercel sets VERCEL=1 in its serverless runtime environment
+_IS_VERCEL = bool(os.environ.get("VERCEL"))
+
 
 def configure_logging() -> None:
-    """
-    Configure loguru for structured JSON logging in production,
-    human-readable colored output in development.
-    
-    WHY LOGURU OVER STDLIB LOGGING:
-    - Zero config for colored output
-    - Structured JSON mode for log aggregation (Datadog, Loki)
-    - Better exception formatting with full stack traces
-    - Lazy string formatting (f-strings only evaluated if log level matches)
-    """
-    logger.remove()  # remove default handler
+    """Configure loguru for JSON output in production, colored output in dev."""
+    logger.remove()
 
     if settings.is_production:
-        # JSON format for log aggregation pipelines
         logger.add(
             sys.stdout,
             format="{time:ISO8601} | {level} | {name}:{line} | {message}",
             level=settings.log_level,
-            serialize=True,  # outputs JSON
+            serialize=True,
         )
     else:
-        # Human-readable with colors for development
         logger.add(
             sys.stdout,
             format=(
@@ -69,79 +55,85 @@ def configure_logging() -> None:
             colorize=True,
         )
 
-    # Also log to rotating file for persistence
-    logger.add(
-        "logs/verirag.log",
-        rotation="100 MB",
-        retention="30 days",
-        compression="gz",
-        level="INFO",
-        enqueue=True,  # async file writing — doesn't block event loop
-    )
+    # File logging: skip on Vercel (read-only FS); use /tmp on any other Linux env
+    if not _IS_VERCEL:
+        log_dir = "logs"
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            logger.add(
+                f"{log_dir}/verirag.log",
+                rotation="100 MB",
+                retention="30 days",
+                compression="gz",
+                level="INFO",
+                enqueue=True,
+            )
+        except Exception as e:
+            logger.warning(f"Could not create log file: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    FastAPI lifespan: code before yield runs on startup, after yield on shutdown.
-    
-    WHY WARM UP SINGLETONS HERE:
-    The embedding model (SentenceTransformer) takes ~2s to load from disk.
-    If we initialize lazily (on first request), the first user gets a slow response.
-    Pre-warming at startup gives consistent response times.
-    """
-    # ── Startup ───────────────────────────────────────────────────────────────
+    # ── Startup ────────────────────────────────────────────────────────────────
     configure_logging()
-    import os
-    os.makedirs("logs", exist_ok=True)
 
     logger.info("=" * 60)
-    logger.info(f"VeriRAG starting | env={settings.app_env} | log={settings.log_level}")
-    logger.info(f"Groq model: {settings.groq_model}")
-    logger.info(f"Embedding model: {settings.embedding_model}")
+    logger.info(f"VeriRAG starting | env={settings.app_env} | vercel={_IS_VERCEL}")
 
-    # Warm up the embedding model (loads ~90MB model weights)
-    logger.info("Warming up embedding model...")
+    if not settings.groq_api_key:
+        logger.warning("GROQ_API_KEY not set - LLM and evaluation features will be unavailable")
+    if not settings.database_url:
+        logger.warning("DATABASE_URL not set - database features will be unavailable")
+    if not settings.hf_token:
+        logger.warning("HF_TOKEN not set - embedding API calls will use anonymous rate limits")
+
+    # Warm up singletons - failures are logged but do not prevent startup
+    from backend.rag.vectorstore import get_vector_store
+    from backend.rag.pipeline import get_pipeline
+    from backend.evaluator.ragas_runner import get_ragas_runner
+
     try:
-        vs = get_vector_store()
-        logger.info("VectorStore initialized ✓")
+        get_vector_store()
+        logger.info("VectorStore initialized")
     except Exception as e:
-        logger.error(f"VectorStore initialization failed: {e}")
+        logger.error(f"VectorStore init failed: {e}")
 
-    # Warm up RAG pipeline (creates LangChain LLM client)
-    logger.info("Warming up RAG pipeline...")
     try:
-        pipeline = get_pipeline()
-        logger.info("RAG pipeline initialized ✓")
+        get_pipeline()
+        logger.info("RAG pipeline initialized")
     except Exception as e:
-        logger.error(f"RAG pipeline initialization failed: {e}")
+        logger.error(f"RAG pipeline init failed: {e}")
 
-    # Warm up RAGAS runner
-    logger.info("Warming up RAGAS runner...")
     try:
-        runner = get_ragas_runner()
-        logger.info("RAGAS runner initialized ✓")
+        get_ragas_runner()
+        logger.info("RAGAS runner initialized")
     except Exception as e:
-        logger.error(f"RAGAS runner initialization failed: {e}")
+        logger.error(f"RAGAS runner init failed: {e}")
 
-    # Verify DB connectivity
-    logger.info("Checking database connectivity...")
-    try:
-        async with get_db_context() as db:
-            await db.execute(text("SELECT 1"))
-        logger.info("PostgreSQL connected ✓")
-    except Exception as e:
-        logger.error(f"Database connection failed: {e}")
+    # Verify DB connectivity (non-fatal)
+    if settings.database_url:
+        try:
+            async with get_db_context() as db:
+                await db.execute(text("SELECT 1"))
+            logger.info("PostgreSQL connected")
+        except Exception as e:
+            logger.error(f"Database connection failed: {e}")
+    else:
+        logger.info("Skipping DB check - DATABASE_URL not configured")
 
-    logger.info("VeriRAG startup complete ✓")
+    logger.info("VeriRAG startup complete")
     logger.info("=" * 60)
 
-    yield  # ── Application runs here ──────────────────────────────────────────
+    yield  # ── Application runs ──────────────────────────────────────────────
 
-    # ── Shutdown ──────────────────────────────────────────────────────────────
+    # ── Shutdown ───────────────────────────────────────────────────────────────
     logger.info("VeriRAG shutting down...")
-    await engine.dispose()
-    logger.info("Database connection pool disposed ✓")
+    try:
+        e = get_engine()
+        await e.dispose()
+        logger.info("Database connection pool disposed")
+    except Exception:
+        pass
     logger.info("Shutdown complete.")
 
 
@@ -150,7 +142,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VeriRAG",
     description="""
-## VeriRAG — Production RAG Evaluation & Observability Platform
+## VeriRAG - Production RAG Evaluation & Observability Platform
 
 VeriRAG evaluates RAG pipeline quality using [RAGAS](https://docs.ragas.io) metrics:
 
@@ -162,9 +154,15 @@ VeriRAG evaluates RAG pipeline quality using [RAGAS](https://docs.ragas.io) metr
 | **Context Recall** | Does retrieved context cover all ground truth information? |
 
 ### Quick Start
-1. `POST /api/v1/pipeline/ingest` — upload your documents
-2. `POST /api/v1/eval/run/sample` — run built-in sample evaluation
-3. `GET /api/v1/eval/runs/{id}` — retrieve RAGAS scores from PostgreSQL
+1. `POST /api/v1/pipeline/ingest` - upload your documents
+2. `POST /api/v1/eval/run/sample` - run built-in sample evaluation
+3. `GET /api/v1/eval/runs/{id}` - retrieve RAGAS scores
+
+### Setup
+Set these environment variables in your deployment:
+- `GROQ_API_KEY` - Groq API key (get free at console.groq.com)
+- `DATABASE_URL` - PostgreSQL connection string (postgresql+asyncpg://...)
+- `HF_TOKEN` - HuggingFace token for embedding API
     """,
     version="1.0.0",
     lifespan=lifespan,
@@ -175,25 +173,45 @@ VeriRAG evaluates RAG pipeline quality using [RAGAS](https://docs.ragas.io) metr
 
 # ── Middleware ─────────────────────────────────────────────────────────────────
 
-# CORS: allow all origins in dev, restrict in production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if not settings.is_production else ["https://yourdomain.com"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# GZip: compress responses > 1KB — especially useful for large eval results
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
 from backend.routers import health, eval, pipeline  # noqa: E402
 
-app.include_router(health.router)                                    # /health
-app.include_router(eval.router, prefix=settings.api_v1_prefix)      # /api/v1/eval/...
-app.include_router(pipeline.router, prefix=settings.api_v1_prefix)  # /api/v1/pipeline/...
+app.include_router(health.router)
+app.include_router(eval.router, prefix=settings.api_v1_prefix)
+app.include_router(pipeline.router, prefix=settings.api_v1_prefix)
+
+# ── System Status ──────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/system/status", include_in_schema=False)
+async def system_status():
+    """Returns configuration status - used by frontend to show setup guide."""
+    missing = []
+    if not settings.groq_api_key:
+        missing.append("GROQ_API_KEY")
+    if not settings.database_url:
+        missing.append("DATABASE_URL")
+    if not settings.hf_token:
+        missing.append("HF_TOKEN")
+
+    return {
+        "configured": len(missing) == 0,
+        "missing_vars": missing,
+        "environment": settings.app_env,
+        "version": "1.0.0",
+        "setup_guide": "https://github.com/OmNarkar777/Verirag#deployment" if missing else None,
+    }
+
 
 # ── Root ──────────────────────────────────────────────────────────────────────
 
@@ -205,4 +223,5 @@ async def root():
         "docs": "/docs",
         "health": "/health",
         "api": settings.api_v1_prefix,
+        "status": "/api/v1/system/status",
     }

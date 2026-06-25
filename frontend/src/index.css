@@ -1,26 +1,41 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  body { @apply bg-slate-950 text-slate-100 antialiased; }
+  body {
+    @apply bg-slate-950 text-slate-100 antialiased;
+    /* Subtle dot grid gives the app a premium dashboard feel */
+    background-image: radial-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 0);
+    background-size: 24px 24px;
+  }
+
   ::-webkit-scrollbar { @apply w-1.5; }
-  ::-webkit-scrollbar-track { @apply bg-slate-900; }
-  ::-webkit-scrollbar-thumb { @apply bg-slate-700 rounded-full; }
+  ::-webkit-scrollbar-track { @apply bg-transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-slate-700/60 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-slate-600; }
 }
 
 @layer utilities {
   .skeleton {
-    @apply relative overflow-hidden bg-slate-800 rounded-lg;
+    @apply relative overflow-hidden bg-slate-800/80 rounded-lg;
   }
   .skeleton::after {
     content: '';
     @apply absolute inset-0;
-    background: linear-gradient(90deg, transparent 0%, rgba(148,163,184,0.07) 50%, transparent 100%);
+    background: linear-gradient(90deg, transparent 0%, rgba(148,163,184,0.06) 50%, transparent 100%);
     background-size: 200% 100%;
-    animation: shimmer 1.5s infinite;
+    animation: shimmer 1.8s infinite;
   }
   .glass {
-    @apply bg-slate-900/60 backdrop-blur-sm border border-slate-800;
+    @apply bg-slate-900/70 backdrop-blur-sm border border-slate-800/80;
   }
+  .glass-hover {
+    @apply glass hover:bg-slate-800/60 hover:border-slate-700/80 transition-colors;
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }

@@ -1,18 +1,16 @@
 /**
- * App.jsx — root component: router, layout shell, page routing.
- *
- * Layout: fixed sidebar (256px) + flex-1 main area with header + scrollable content.
- * Error boundary wraps each page so one crashed component can't take down the whole UI.
+ * App.jsx - root component: router, layout shell, page routing, global status banner.
  */
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { Component } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import axios from 'axios'
 import Sidebar from './components/layout/Sidebar.jsx'
 import Header from './components/layout/Header.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
 import RunDetailsPage from './pages/RunDetailsPage.jsx'
 import PipelinePage from './pages/PipelinePage.jsx'
 
-// Simple error boundary — shows error details + reload button
 class ErrorBoundary extends Component {
   state = { error: null }
   static getDerivedStateFromError(error) { return { error } }
@@ -35,6 +33,37 @@ class ErrorBoundary extends Component {
   }
 }
 
+function SetupBanner({ missing }) {
+  if (!missing?.length) return null
+  return (
+    <div className="bg-amber-500/10 border-b border-amber-500/20 px-6 py-2.5 flex items-center gap-3 text-xs shrink-0">
+      <div className="w-4 h-4 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
+        <span className="text-amber-400 font-bold" style={{ fontSize: 9 }}>!</span>
+      </div>
+      <span className="text-amber-300 font-medium">Setup required:</span>
+      <span className="text-amber-400/80">
+        Set{' '}
+        {missing.map((v, i) => (
+          <span key={v}>
+            <code className="text-amber-300 font-mono">{v}</code>
+            {i < missing.length - 1 ? ', ' : ''}
+          </span>
+        ))}
+        {' '}in your Vercel environment variables to enable all features.
+      </span>
+    </div>
+  )
+}
+
+function useSystemStatus() {
+  return useQuery({
+    queryKey: ['system-status'],
+    queryFn: () => axios.get('/api/v1/system/status').then((r) => r.data),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
 const PAGE_META = {
   '/': { title: 'Dashboard', subtitle: 'RAGAS metric trends and eval run history' },
   '/pipeline': { title: 'Pipeline', subtitle: 'Ingest documents · Query · Trigger evaluations' },
@@ -42,17 +71,21 @@ const PAGE_META = {
 
 function Layout() {
   const location = useLocation()
-  const isRunDetail = location.pathname.startsWith('/runs/')
   const meta = PAGE_META[location.pathname] ?? {
     title: 'Run Details',
     subtitle: 'Per-case RAGAS scores and regression analysis',
   }
 
+  const { data: status } = useSystemStatus()
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Header title={meta.title} subtitle={meta.subtitle} />
+        {status && !status.configured && (
+          <SetupBanner missing={status.missing_vars} />
+        )}
         <main className="flex-1 overflow-y-auto">
           <ErrorBoundary>
             <Routes>

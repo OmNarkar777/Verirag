@@ -1,12 +1,5 @@
 /**
- * DashboardPage — main view: metric cards, trend chart, regression alert, runs table.
- *
- * Data flow:
- * 1. useEvalRuns() fetches all runs (polls every 8s if any are running)
- * 2. Derive "latest completed" run for the 4 MetricCards
- * 3. Derive "second-latest completed" run for delta calculation
- * 4. Pass full run list to MetricTrendChart and EvalRunsTable
- * 5. RegressionAlert independently queries /eval/regressions
+ * DashboardPage - metric cards, trend chart, regression alert, runs table.
  */
 import { useState } from 'react'
 import { useEvalRuns, useStartSampleEval } from '../hooks/useEvalRuns.js'
@@ -17,12 +10,23 @@ import RegressionAlert from '../components/dashboard/RegressionAlert.jsx'
 
 const METRICS = ['faithfulness', 'answer_relevancy', 'context_precision', 'context_recall']
 
+function ApiErrorBanner({ message }) {
+  return (
+    <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-5 py-4">
+      <p className="text-sm font-medium text-red-400 mb-1">Unable to reach backend API</p>
+      <p className="text-xs text-slate-500">{message}</p>
+      <p className="text-xs text-slate-600 mt-2">
+        If you just deployed, check that <code className="text-slate-400">DATABASE_URL</code> and{' '}
+        <code className="text-slate-400">GROQ_API_KEY</code> are set in your Vercel environment variables.
+      </p>
+    </div>
+  )
+}
+
 export default function DashboardPage() {
-  const [sampleVersion, setSampleVersion] = useState('v0.0.1-sample')
-  const { data: runs = [], isLoading } = useEvalRuns()
+  const { data: runs = [], isLoading, isError, error } = useEvalRuns()
   const startSample = useStartSampleEval()
 
-  // Derive latest two completed runs for score + delta display
   const completed = runs.filter((r) => r.status === 'completed' && r.scores)
   const latest = completed[0] ?? null
   const previous = completed[1] ?? null
@@ -45,10 +49,10 @@ export default function DashboardPage() {
 
   return (
     <div className="p-6 max-w-7xl space-y-6">
-      {/* Regression alert — shown when any recent run has regressions */}
+      {isError && <ApiErrorBanner message={error?.message} />}
+
       <RegressionAlert />
 
-      {/* Active eval notice */}
       {activeCount > 0 && (
         <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 px-4 py-2.5 flex items-center gap-2.5">
           <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
@@ -95,7 +99,6 @@ export default function DashboardPage() {
         <MetricTrendChart runs={runs} loading={isLoading} />
       </div>
 
-      {/* Runs table */}
       <EvalRunsTable
         runs={runs}
         loading={isLoading}

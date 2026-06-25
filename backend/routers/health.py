@@ -1,22 +1,9 @@
-"""
-routers/health.py — Health check endpoint.
+"""routers/health.py - Health check and system readiness endpoint."""
 
-WHY A PROPER HEALTH ENDPOINT:
-- Kubernetes liveness/readiness probes call /health
-- Load balancers route traffic only to healthy instances
-- Monitoring systems alert when DB or vector store becomes unavailable
-
-We check actual dependency connectivity, not just "is the process running".
-A degraded health check (DB down but app running) is different from a crash.
-"""
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.database import get_db
 from backend.config import get_settings
-from backend.rag.vectorstore import get_vector_store
 from backend.schemas import HealthResponse
 
 router = APIRouter(tags=["health"])
@@ -24,35 +11,41 @@ settings = get_settings()
 
 
 @router.get("/health", response_model=HealthResponse, summary="System health check")
-async def health_check(db: AsyncSession = Depends(get_db)) -> HealthResponse:
+async def health_check() -> HealthResponse:
     """
     Checks connectivity to PostgreSQL and ChromaDB.
-    Returns 200 if all systems operational, 503 if any dependency is down.
+    Returns 200 with status='ok' or status='degraded'.
+    Only returns 503 if the process itself is broken (caught by the framework).
 
-    Kubernetes pattern: use this as both liveness and readiness probe.
+    This design lets load balancers distinguish 'app running but misconfigured'
+    from 'app crashed' - both valid signals, but different responses.
     """
-    db_status = "unknown"
-    chroma_status = "unknown"
+    db_status = "not configured"
+    chroma_status = "not configured"
 
     # Check PostgreSQL
-    try:
-        await db.execute(text("SELECT 1"))
-        db_status = "ok"
-    except Exception as e:
-        db_status = f"error: {str(e)[:100]}"
+    if settings.database_url:
+        try:
+            from backend.database import get_db_context
+            async with get_db_context() as db:
+                await db.execute(text("SELECT 1"))
+            db_status = "ok"
+        except Exception as e:
+            db_status = f"error: {str(e)[:120]}"
 
     # Check ChromaDB
     try:
+        from backend.rag.vectorstore import get_vector_store
         vs = get_vector_store()
         stats = vs.get_collection_stats()
         chroma_status = f"ok (docs={stats['document_count']})"
     except Exception as e:
-        chroma_status = f"error: {str(e)[:100]}"
+        chroma_status = f"error: {str(e)[:120]}"
 
-    overall_status = "ok" if (db_status == "ok" and chroma_status.startswith("ok")) else "degraded"
+    overall = "ok" if (db_status == "ok" and chroma_status.startswith("ok")) else "degraded"
 
     return HealthResponse(
-        status=overall_status,
+        status=overall,
         version="1.0.0",
         database=db_status,
         chromadb=chroma_status,

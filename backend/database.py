@@ -1,18 +1,11 @@
 """
-database.py — Async SQLAlchemy engine, session factory, and base model.
+database.py - Async SQLAlchemy engine, session factory, and declarative base.
 
-WHY ASYNC:
-- Evaluation runs can take 30-60s (RAGAS calls multiple LLM endpoints)
-- Synchronous DB drivers would block the event loop during that time
-- asyncpg is the fastest PostgreSQL async driver — 3-4x faster than psycopg2
-  for high-concurrency workloads
-
-WHY NOT create_all():
-- We use Alembic migrations instead (see alembic/)
-- create_all() is fine for prototypes but loses schema history
-- Recruiters want to see you understand schema evolution in production
+Engine is created lazily on first use so the module can be imported without
+DATABASE_URL being set (enabling graceful degradation when env vars are missing).
 """
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -27,49 +20,69 @@ from backend.config import get_settings
 
 settings = get_settings()
 
-# pool_pre_ping: validates connections before use — handles DB restarts gracefully
-# pool_size + max_overflow: tune for eval workload (mostly I/O bound, not CPU)
-# echo=False in prod: SQL logging is expensive at scale
-engine = create_async_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    echo=not settings.is_production,
-)
+_engine = None
+_session_factory = None
 
-# async_sessionmaker is the async equivalent of sessionmaker
-# expire_on_commit=False: prevents lazy-load errors after commit in async context
-# This is a critical asyncio gotcha — expired attrs trigger sync I/O
-AsyncSessionLocal = async_sessionmaker(
-    bind=engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autocommit=False,
-    autoflush=False,
-)
+
+def get_engine():
+    global _engine
+    if _engine is None:
+        if not settings.database_url:
+            raise RuntimeError(
+                "DATABASE_URL is not configured. "
+                "Add it in your Vercel project environment variables. "
+                "Example: postgresql+asyncpg://user:pass@host:5432/dbname"
+            )
+        # Use NullPool on Vercel serverless - each function invocation is isolated,
+        # so persistent connection pools waste resources and exhaust DB connections.
+        if os.environ.get("VERCEL"):
+            from sqlalchemy.pool import NullPool
+            _engine = create_async_engine(
+                settings.database_url,
+                poolclass=NullPool,
+                echo=False,
+            )
+        else:
+            _engine = create_async_engine(
+                settings.database_url,
+                pool_pre_ping=True,
+                pool_size=5,
+                max_overflow=10,
+                echo=not settings.is_production,
+            )
+    return _engine
+
+
+def _get_session_factory():
+    global _session_factory
+    if _session_factory is None:
+        _session_factory = async_sessionmaker(
+            bind=get_engine(),
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autocommit=False,
+            autoflush=False,
+        )
+    return _session_factory
 
 
 class Base(DeclarativeBase):
-    """
-    Declarative base for all ORM models.
-    Using the new 2.0-style DeclarativeBase (not declarative_base())
-    for better type inference with SQLAlchemy 2.x mapped_column().
-    """
+    """Declarative base for all ORM models."""
     pass
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI dependency that yields a database session.
-
-    Usage in routes:
-        async def my_route(db: AsyncSession = Depends(get_db)):
-
-    The try/finally ensures rollback on unhandled exceptions, preventing
-    connection pool exhaustion from hanging transactions.
+    Raises HTTP 503 with a helpful message if DATABASE_URL is not configured.
     """
-    async with AsyncSessionLocal() as session:
+    from fastapi import HTTPException
+    try:
+        factory = _get_session_factory()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    async with factory() as session:
         try:
             yield session
             await session.commit()
@@ -82,15 +95,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
-    """
-    Context manager version of get_db for use outside of FastAPI DI
-    (e.g., background tasks, CLI scripts, tests).
-
-    Usage:
-        async with get_db_context() as db:
-            result = await db.execute(...)
-    """
-    async with AsyncSessionLocal() as session:
+    """Context manager version of get_db for use outside of FastAPI DI."""
+    factory = _get_session_factory()
+    async with factory() as session:
         try:
             yield session
             await session.commit()

@@ -1,6 +1,5 @@
-﻿/**
- * hooks/useEvalRuns.js â€” React Query hooks for eval runs + regression data.
- * TanStack Query v5: refetchInterval receives { data, query } not data directly.
+/**
+ * hooks/useEvalRuns.js - React Query hooks for eval runs + regression data.
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { listEvalRuns, getRegressions, startSampleEval, deleteEvalRun, getEvalStatus } from '../api/client.js'
@@ -12,11 +11,11 @@ export function useEvalRuns({ limit = 50 } = {}) {
   return useQuery({
     queryKey: [...EVAL_RUNS_KEY, limit],
     queryFn: () => listEvalRuns({ limit }),
-    // v5 API: refetchInterval receives { data } destructure, not raw data
     refetchInterval: ({ data } = {}) => {
       const hasRunning = data?.some((r) => r.status === 'running')
       return hasRunning ? 8_000 : 30_000
     },
+    retry: 1,
   })
 }
 
@@ -25,6 +24,7 @@ export function useRegressions() {
     queryKey: REGRESSIONS_KEY,
     queryFn: getRegressions,
     refetchInterval: 30_000,
+    retry: 1,
   })
 }
 
@@ -33,6 +33,7 @@ export function useEvalStatus() {
     queryKey: ['eval-status'],
     queryFn: getEvalStatus,
     refetchInterval: 10_000,
+    retry: false,
   })
 }
 

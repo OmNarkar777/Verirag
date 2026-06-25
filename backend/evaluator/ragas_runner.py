@@ -197,8 +197,8 @@ class RagasRunner:
 
     async def _run_regression_check(self, eval_run_id: uuid.UUID) -> None:
         from backend.services.regression_service import detect_and_store_regressions
-        from backend.database import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
+        from backend.database import get_db_context
+        async with get_db_context() as db:
             try:
                 await detect_and_store_regressions(db, eval_run_id)
                 await db.commit()
