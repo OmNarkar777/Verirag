@@ -3,12 +3,12 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 
+from huggingface_hub import InferenceClient
 from langchain_core.embeddings import Embeddings
 from langchain_groq import ChatGroq
 from loguru import logger
 from ragas import evaluate
 from ragas.metrics import AnswerRelevancy, ContextPrecision, ContextRecall, Faithfulness
-from sentence_transformers import SentenceTransformer
 
 from backend.config import get_settings
 from backend.database import get_db_context
@@ -19,16 +19,26 @@ from backend.schemas import TestCaseInput
 settings = get_settings()
 
 
-class SentenceTransformerEmbeddings(Embeddings):
-    """LangChain-compatible wrapper so RAGAS AnswerRelevancy can use our local model."""
+class HFInferenceEmbeddings(Embeddings):
+    """LangChain-compatible wrapper using HuggingFace Inference API (no local torch)."""
     def __init__(self):
-        self.model = SentenceTransformer(settings.embedding_model)
+        self._client = InferenceClient(token=settings.hf_token or None)
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        response = self._client.feature_extraction(
+            text=texts,
+            model=settings.embedding_model,
+            normalize=True,
+        )
+        if hasattr(response, "tolist"):
+            return response.tolist()
+        return [list(vec) for vec in response]
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return self.model.encode(texts, normalize_embeddings=True).tolist()
+        return self._embed(texts)
 
     def embed_query(self, text: str) -> list[float]:
-        return self.model.encode([text], normalize_embeddings=True)[0].tolist()
+        return self._embed([text])[0]
 
 
 class RagasRunner:
@@ -38,7 +48,7 @@ class RagasRunner:
             model=settings.groq_model,
             temperature=0.0,
         )
-        self.embeddings = SentenceTransformerEmbeddings()
+        self.embeddings = HFInferenceEmbeddings()
         logger.info(f"RagasRunner initialized | judge_model={settings.groq_model}")
 
     def _configure_metrics(self) -> list:

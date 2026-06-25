@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     chroma_collection_name: str = Field(default="verirag_docs")
 
     # Embeddings
-    embedding_model: str = Field(default="all-MiniLM-L6-v2")
+    embedding_model: str = Field(default="sentence-transformers/all-MiniLM-L6-v2")
+    hf_token: str = Field(default="", description="HuggingFace token for Inference API embeddings")
 
     # RAG
     retrieval_top_k: int = Field(default=5)

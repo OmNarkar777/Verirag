@@ -24,8 +24,8 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from huggingface_hub import InferenceClient
 from loguru import logger
-from sentence_transformers import SentenceTransformer
 
 from backend.config import get_settings
 
@@ -35,10 +35,10 @@ settings = get_settings()
 class VectorStoreManager:
     """
     Wraps ChromaDB operations with a clean interface.
-    
+
     WHY NOT langchain's ChromaDB wrapper:
     Using ChromaDB's native client gives us more control over:
-    - Custom embedding functions (our SentenceTransformer wrapper)
+    - Custom embedding functions (our HF Inference API wrapper)
     - Batch operations with progress tracking
     - Collection management (list, delete, inspect)
     """
@@ -50,7 +50,7 @@ class VectorStoreManager:
             path=settings.chroma_persist_dir,
             settings=ChromaSettings(anonymized_telemetry=False),
         )
-        self._embedding_model = SentenceTransformer(settings.embedding_model)
+        self._hf_client = InferenceClient(token=settings.hf_token or None)
         self._text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=512,
             chunk_overlap=50,
@@ -60,24 +60,21 @@ class VectorStoreManager:
         )
         logger.info(
             f"VectorStoreManager initialized | "
-            f"model={settings.embedding_model} | "
+            f"embedding_model={settings.embedding_model} (HF Inference API) | "
             f"persist_dir={settings.chroma_persist_dir}"
         )
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        """
-        Batch embed texts using SentenceTransformer.
-        Returns list of embedding vectors.
-        normalize_embeddings=True: ensures cosine similarity == dot product,
-        which is what ChromaDB uses internally.
-        """
-        embeddings = self._embedding_model.encode(
-            texts,
-            batch_size=32,
-            normalize_embeddings=True,
-            show_progress_bar=False,
+        """Embed texts via HuggingFace Inference API (no local model weights needed)."""
+        response = self._hf_client.feature_extraction(
+            text=texts,
+            model=settings.embedding_model,
+            normalize=True,
         )
-        return embeddings.tolist()
+        # response shape: (n_texts, dim) as nested list
+        if hasattr(response, "tolist"):
+            return response.tolist()
+        return [list(vec) for vec in response]
 
     def get_or_create_collection(self, collection_name: str) -> chromadb.Collection:
         """
