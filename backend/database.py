@@ -74,23 +74,48 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI dependency that yields a database session.
-    Raises HTTP 503 with a helpful message if DATABASE_URL is not configured.
+    Raises HTTP 503 (not 500) for any database unavailability so the frontend
+    can display a helpful setup message instead of a generic error.
     """
     from fastapi import HTTPException
+    from sqlalchemy.exc import OperationalError, SQLAlchemyError
+
     try:
         factory = _get_session_factory()
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    async with factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+    try:
+        async with factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except HTTPException:
+                raise
+            except (OperationalError, SQLAlchemyError) as e:
+                await session.rollback()
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Database unavailable. "
+                        f"Check DATABASE_URL in Vercel environment variables. ({type(e).__name__})"
+                    ),
+                )
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
+    except HTTPException:
+        raise
+    except (OperationalError, SQLAlchemyError) as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Cannot connect to database. "
+                f"Check DATABASE_URL in Vercel environment variables. ({type(e).__name__})"
+            ),
+        )
 
 
 @asynccontextmanager
