@@ -23,51 +23,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-from backend.database import Base
 from backend.main import app
-from backend.schemas import TestCaseInput
-
-
-# ── Test Database Setup ────────────────────────────────────────────────────────
-
-TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
-
-
-@pytest_asyncio.fixture
-async def test_db():
-    """
-    In-memory SQLite database for tests.
-    
-    WHY SQLITE FOR TESTS:
-    PostgreSQL ARRAY and JSONB aren't supported in SQLite, but we can
-    test the application logic without them. For strict DB compatibility
-    tests, use a real PostgreSQL instance (CI/CD pipeline).
-    """
-    engine = create_async_engine(TEST_DB_URL, echo=False)
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with session_factory() as session:
-        yield session
-
-    await engine.dispose()
+from backend.schemas import TestCaseInput as EvalTestCase
 
 
 # ── Sample Test Data ───────────────────────────────────────────────────────────
 
 SAMPLE_TEST_CASES = [
-    TestCaseInput(
+    EvalTestCase(
         question="What is retrieval-augmented generation?",
         answer="RAG combines retrieval of relevant documents with language model generation.",
         contexts=["RAG is a technique that retrieves documents before LLM generation."],
         ground_truth="RAG retrieves relevant documents from a knowledge base and uses them as context for LLM generation.",
     ),
-    TestCaseInput(
+    EvalTestCase(
         question="What does RAGAS measure?",
         answer="RAGAS measures faithfulness, answer relevancy, context precision, and context recall.",
         contexts=["RAGAS is a framework for evaluating RAG pipelines using four metrics."],
@@ -129,7 +99,7 @@ class TestEvalRunRequest:
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
-            TestCaseInput(
+            EvalTestCase(
                 question="What is RAG?",
                 answer="RAG is...",
                 contexts=["valid context", ""],  # empty string should fail
@@ -141,21 +111,31 @@ class TestEvalRunRequest:
 
 class TestEvalService:
     @pytest.mark.asyncio
-    async def test_list_eval_runs_empty(self, test_db):
-        """Empty database should return empty list."""
+    async def test_list_eval_runs_empty(self):
+        """Empty database should return empty list (uses mock session — avoids JSONB/SQLite incompatibility)."""
         from backend.services.eval_service import EvalService
 
+        session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        session.execute = AsyncMock(return_value=mock_result)
+
         service = EvalService()
-        runs = await service.list_eval_runs(db=test_db)
+        runs = await service.list_eval_runs(db=session)
         assert runs == []
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_run(self, test_db):
+    async def test_get_nonexistent_run(self):
         """Querying a non-existent run should return None."""
         from backend.services.eval_service import EvalService
 
+        session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(return_value=mock_result)
+
         service = EvalService()
-        result = await service.get_eval_run(db=test_db, run_id=uuid.uuid4())
+        result = await service.get_eval_run(db=session, run_id=uuid.uuid4())
         assert result is None
 
     @pytest.mark.asyncio
@@ -238,20 +218,54 @@ class TestDatasetBuilder:
 
 @pytest.fixture
 def mock_eval_service():
-    """Mock the eval service so tests don't call Groq/RAGAS."""
-    with patch("backend.routers.eval.get_eval_service") as mock:
-        service = AsyncMock()
-        service.start_eval_run.return_value = uuid.uuid4()
-        service.execute_evaluation.return_value = None
-        service.list_eval_runs.return_value = []
-        service.get_eval_run.return_value = None
-        mock.return_value = service
-        yield service
+    """
+    Mock the eval service via dependency_overrides — correct way to mock
+    FastAPI deps since Depends() captures the function reference at definition time,
+    not at call time, so module-level patch() has no effect.
+    """
+    from backend.main import app
+    from backend.services.eval_service import get_eval_service
+
+    service = MagicMock()
+    service.start_eval_run = AsyncMock(return_value=uuid.uuid4())
+    service.execute_evaluation = AsyncMock(return_value=None)
+    service.list_eval_runs = AsyncMock(return_value=[])
+    service.get_eval_run = AsyncMock(return_value=None)
+
+    app.dependency_overrides[get_eval_service] = lambda: service
+    yield service
+    app.dependency_overrides.pop(get_eval_service, None)
+
+
+@pytest.fixture
+def mock_db():
+    """Override get_db so endpoint tests don't need a real database."""
+    from backend.main import app
+    from backend.database import get_db
+
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    session.close = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    async def _mock_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _mock_get_db
+    yield session
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.mark.asyncio
 class TestEvalEndpoints:
-    async def test_post_eval_run_returns_202(self, mock_eval_service):
+    async def test_post_eval_run_returns_202(self, mock_eval_service, mock_db):
         """POST /eval/run should return 202 Accepted with run_id."""
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -267,7 +281,7 @@ class TestEvalEndpoints:
         assert data["status"] == "running"
         assert data["version_tag"] == "v1.0.0-test"
 
-    async def test_post_eval_run_invalid_version_returns_422(self, mock_eval_service):
+    async def test_post_eval_run_invalid_version_returns_422(self, mock_eval_service, mock_db):
         """Invalid version tag should return 422 Unprocessable Entity."""
         bad_request = {**SAMPLE_EVAL_REQUEST, "version_tag": "not-semver"}
 
@@ -278,8 +292,8 @@ class TestEvalEndpoints:
 
         assert response.status_code == 422
 
-    async def test_get_eval_runs_returns_list(self, mock_eval_service):
-        """GET /eval/runs should return a list."""
+    async def test_get_eval_runs_returns_list(self, mock_db):
+        """GET /eval/runs should return a list (no eval service needed for list endpoint)."""
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -288,10 +302,10 @@ class TestEvalEndpoints:
         assert response.status_code == 200
         assert isinstance(response.json(), list)
 
-    async def test_get_nonexistent_run_returns_404(self, mock_eval_service):
+    async def test_get_nonexistent_run_returns_404(self, mock_eval_service, mock_db):
         """GET /eval/runs/{unknown_id} should return 404."""
         run_id = uuid.uuid4()
-        mock_eval_service.get_eval_run.return_value = None
+        mock_eval_service.get_eval_run = AsyncMock(return_value=None)
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

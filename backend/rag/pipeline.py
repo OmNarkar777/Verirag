@@ -35,16 +35,22 @@ class RAGPipeline:
             os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
             os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
 
-        self.llm = ChatGroq(
-            api_key=settings.groq_api_key,
-            model=settings.groq_model,         # 'model' not 'model_name'
-            temperature=settings.groq_temperature,
-        )
-        self.prompt = ChatPromptTemplate.from_messages([
-            ("system", RAG_SYSTEM_PROMPT),
-            ("human", RAG_HUMAN_PROMPT),
-        ])
-        self.chain = self.prompt | self.llm | StrOutputParser()
+        if settings.groq_api_key:
+            self.llm = ChatGroq(
+                api_key=settings.groq_api_key,
+                model=settings.groq_model,
+                temperature=settings.groq_temperature,
+            )
+            self.prompt = ChatPromptTemplate.from_messages([
+                ("system", RAG_SYSTEM_PROMPT),
+                ("human", RAG_HUMAN_PROMPT),
+            ])
+            self.chain = self.prompt | self.llm | StrOutputParser()
+        else:
+            self.llm = None
+            self.prompt = None
+            self.chain = None
+            logger.warning("GROQ_API_KEY not set — RAG query will return degraded response")
 
     @traceable(name="rag_pipeline_query", run_type="chain")
     def query(
@@ -67,6 +73,14 @@ class RAGPipeline:
             top_k=top_k,
             use_mmr=True,
         )
+
+        if not self.chain:
+            return {
+                "question": question,
+                "answer": "RAG pipeline is not configured. Set GROQ_API_KEY in your environment variables.",
+                "retrieved_chunks": chunks if chunks else [],
+                "model_used": "not-configured",
+            }
 
         if not chunks:
             logger.warning("No chunks retrieved")
@@ -116,5 +130,12 @@ _pipeline: Optional[RAGPipeline] = None
 def get_pipeline() -> RAGPipeline:
     global _pipeline
     if _pipeline is None:
-        _pipeline = RAGPipeline()
+        try:
+            _pipeline = RAGPipeline()
+        except Exception as e:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=503,
+                detail=f"RAG pipeline unavailable: {e}. Check GROQ_API_KEY and HF_TOKEN.",
+            ) from e
     return _pipeline

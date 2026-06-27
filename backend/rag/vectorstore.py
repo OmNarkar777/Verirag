@@ -174,6 +174,9 @@ class VectorStoreManager:
         collection = self.get_or_create_collection(collection_name)
         top_k = top_k or settings.retrieval_top_k
 
+        if collection.count() == 0:
+            return []
+
         query_embedding = self._embed([query])[0]
 
         results = collection.query(

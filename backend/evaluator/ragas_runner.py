@@ -43,6 +43,11 @@ class HFInferenceEmbeddings(Embeddings):
 
 class RagasRunner:
     def __init__(self):
+        if not settings.groq_api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is required for RAGAS evaluation. "
+                "Set it in your Vercel environment variables."
+            )
         self.judge_llm = ChatGroq(
             api_key=settings.groq_api_key,
             model=settings.groq_model,

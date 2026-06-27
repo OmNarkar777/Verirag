@@ -32,13 +32,22 @@ from backend.schemas import (
 class EvalService:
     """
     Business logic for creating, running, and querying evaluations.
-    
+
     All DB operations are async — never blocks the event loop.
     RAGAS execution is delegated to RagasRunner (runs in thread pool).
+
+    The RagasRunner is initialised lazily so that read-only endpoints
+    (list runs, get run detail) work even when GROQ_API_KEY is absent.
     """
 
     def __init__(self, runner: RagasRunner | None = None):
-        self.runner = runner or get_ragas_runner()
+        self._runner = runner  # may be None; resolved on first write operation
+
+    @property
+    def runner(self) -> RagasRunner:
+        if self._runner is None:
+            self._runner = get_ragas_runner()
+        return self._runner
 
     async def start_eval_run(
         self,

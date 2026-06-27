@@ -43,13 +43,16 @@ async def start_eval_run(
     service: EvalService = Depends(get_eval_service),
 ) -> EvalRunResponse:
     logger.info(f"POST /eval/run | version={request.version_tag} | cases={len(request.test_cases)}")
-    eval_run_id = await service.start_eval_run(
-        db=db,
-        version_tag=request.version_tag,
-        pipeline_name=request.pipeline_name,
-        test_cases=request.test_cases,
-        metadata=request.metadata,
-    )
+    try:
+        eval_run_id = await service.start_eval_run(
+            db=db,
+            version_tag=request.version_tag,
+            pipeline_name=request.pipeline_name,
+            test_cases=request.test_cases,
+            metadata=request.metadata,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     background_tasks.add_task(_guarded_execution, service, eval_run_id, request.test_cases)
     return EvalRunResponse(
         eval_run_id=eval_run_id,
@@ -68,10 +71,13 @@ async def run_sample_eval(
 ) -> EvalRunResponse:
     from backend.evaluator.dataset_builder import get_sample_test_cases
     test_cases = get_sample_test_cases()
-    eval_run_id = await service.start_eval_run(
-        db=db, version_tag=version_tag, pipeline_name="sample-ai-ml-pipeline",
-        test_cases=test_cases, metadata={"dataset": "sample_10_ai_ml_cases", "source": "builtin"},
-    )
+    try:
+        eval_run_id = await service.start_eval_run(
+            db=db, version_tag=version_tag, pipeline_name="sample-ai-ml-pipeline",
+            test_cases=test_cases, metadata={"dataset": "sample_10_ai_ml_cases", "source": "builtin"},
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     background_tasks.add_task(_guarded_execution, service, eval_run_id, test_cases)
     return EvalRunResponse(
         eval_run_id=eval_run_id, version_tag=version_tag, status="running",

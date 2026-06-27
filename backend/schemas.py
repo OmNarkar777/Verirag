@@ -88,6 +88,7 @@ class RetrievedChunk(BaseModel):
 
 
 class QueryResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
     question: str
     answer: str
     retrieved_chunks: list[RetrievedChunk]
