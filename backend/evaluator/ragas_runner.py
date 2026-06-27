@@ -25,13 +25,16 @@ class HFInferenceEmbeddings(Embeddings):
         self._client = InferenceClient(token=settings.hf_token or None)
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
+        # huggingface_hub 0.23.x: no normalize param; BAAI/bge models normalize by default.
         response = self._client.feature_extraction(
             text=texts,
             model=settings.embedding_model,
-            normalize=True,
         )
         if hasattr(response, "tolist"):
-            return response.tolist()
+            result = response.tolist()
+            if result and not isinstance(result[0], list):
+                return [result]
+            return result
         return [list(vec) for vec in response]
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:

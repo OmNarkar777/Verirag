@@ -66,14 +66,18 @@ class VectorStoreManager:
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts via HuggingFace Inference API (no local model weights needed)."""
+        # huggingface_hub 0.23.x: feature_extraction(text, model) only — no normalize param.
+        # BAAI/bge models return L2-normalized embeddings by default.
         response = self._hf_client.feature_extraction(
             text=texts,
             model=settings.embedding_model,
-            normalize=True,
         )
-        # response shape: (n_texts, dim) as nested list
         if hasattr(response, "tolist"):
-            return response.tolist()
+            result = response.tolist()
+            # Guard: single-text calls may return (dim,) instead of (1, dim)
+            if result and not isinstance(result[0], list):
+                return [result]
+            return result
         return [list(vec) for vec in response]
 
     def get_or_create_collection(self, collection_name: str) -> chromadb.Collection:

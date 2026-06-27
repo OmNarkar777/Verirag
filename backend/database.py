@@ -116,6 +116,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
                 f"Check DATABASE_URL in Vercel environment variables. ({type(e).__name__})"
             ),
         )
+    except Exception as e:
+        # Catch raw OS/socket errors (e.g. ConnectionRefusedError) that asyncpg
+        # raises before SQLAlchemy can wrap them in OperationalError.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Cannot reach database host. "
+                f"Check DATABASE_URL in Vercel environment variables. ({type(e).__name__})"
+            ),
+        )
 
 
 @asynccontextmanager
