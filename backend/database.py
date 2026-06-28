@@ -3,9 +3,18 @@ database.py - Async SQLAlchemy engine, session factory, and declarative base.
 
 Engine is created lazily on first use so the module can be imported without
 DATABASE_URL being set (enabling graceful degradation when env vars are missing).
+
+Driver selection:
+- Local dev: asyncpg (fast, zero config)
+- Vercel Lambda: psycopg3 (psycopg[asyncio])
+    uvloop 0.22 pre-installed by Vercel uses libuv-native SSL in
+    create_connection(ssl=ctx), which returns UV_EBUSY on Lambda.
+    psycopg3 uses asyncio.start_tls() which goes through Python's ssl
+    module and does not hit the libuv SSL path — no EBUSY.
 """
 
 import os
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -23,93 +32,121 @@ settings = get_settings()
 _engine = None
 _session_factory = None
 
+_CLOUD_HOSTS = ("supabase.com", "neon.tech", "neon.database.azure.com", "render.com")
+_POOLER_MARKERS = ("pooler.supabase.com", ":6543")
 
-def _build_connect_args(url: str) -> dict:
+
+# ── URL normalisation ─────────────────────────────────────────────────────────
+
+def _to_driver_url(url: str, driver: str) -> str:
     """
-    Return asyncpg connect_args appropriate for the target database.
+    Normalise any postgresql:// variant to use the requested driver.
 
-    Cloud PostgreSQL providers (Supabase, Neon, Render) require SSL.
-    asyncpg ignores psycopg2-style `sslmode=require` URL params — the
-    only valid approach is connect_args={"ssl": "require"}.
-
-    pgBouncer Transaction Pooler (Supabase port 6543): asyncpg caches
-    prepared statements per server connection.  pgBouncer multiplexes
-    client connections across different server connections, so a prepared
-    statement prepared on connection A may not exist on connection B.
-    statement_cache_size=0 disables the cache and is required when
-    connecting through any pgBouncer Transaction/Statement pooler.
+    Handles:
+        postgresql://          (Supabase default — no driver)
+        postgres://            (shorthand)
+        postgresql+asyncpg://  (explicit asyncpg)
+        postgresql+psycopg2:// (legacy)
+        postgresql+psycopg://  (psycopg3)
     """
-    cloud_hosts = ("supabase.com", "neon.tech", "neon.database.azure.com", "render.com")
+    # Strip sslmode= — both drivers configure SSL via connect_args, not URL
+    url = re.sub(r"[?&]sslmode=\w+", "", url)
+    # Normalise scheme
+    for prefix in (
+        "postgresql+asyncpg://",
+        "postgresql+psycopg2://",
+        "postgresql+psycopg://",
+        "postgresql://",
+        "postgres://",
+    ):
+        if url.startswith(prefix):
+            return f"postgresql+{driver}://" + url[len(prefix):]
+    return url  # already correct or unknown scheme
+
+
+def _clean_url(url: str) -> str:
+    """Normalise to asyncpg scheme (local default).  Strips sslmode."""
+    return _to_driver_url(url, "asyncpg")
+
+
+def _ensure_asyncpg_scheme(url: str) -> str:
+    """Alias kept for any external callers."""
+    return _clean_url(url)
+
+
+# ── connect_args per driver ───────────────────────────────────────────────────
+
+def _asyncpg_connect_args(url: str) -> dict:
+    """
+    asyncpg connect_args for cloud hosts.
+    ssl="require" → asyncpg creates an isolated SSLContext per connection.
+    statement_cache_size=0 → required for pgBouncer Transaction Pooler
+    (asyncpg prepared stmts are per server-connection; pgBouncer multiplexes).
+    """
     args: dict = {}
-    if any(h in url for h in cloud_hosts):
+    if any(h in url for h in _CLOUD_HOSTS):
         args["ssl"] = "require"
-        # pgBouncer (Supabase Transaction/Session Pooler): disable prepared
-        # statement cache so asyncpg doesn't assume a statement prepared on
-        # one server connection exists on a different server connection.
-        if "pooler.supabase.com" in url or ":6543" in url:
+        if any(m in url for m in _POOLER_MARKERS):
             args["statement_cache_size"] = 0
     return args
 
 
-def _ensure_asyncpg_scheme(url: str) -> str:
+def _psycopg_connect_args(url: str) -> dict:
     """
-    Normalise any postgresql:// variant to postgresql+asyncpg://.
-
-    Supabase and most cloud providers emit plain postgresql:// URIs.
-    SQLAlchemy's create_async_engine falls back to psycopg2 (the sync
-    default) when no driver is specified, raising ModuleNotFoundError
-    if psycopg2 is not installed.  This normaliser converts:
-      postgresql://      → postgresql+asyncpg://
-      postgresql+psycopg2:// → postgresql+asyncpg://
-    so the user can paste the URL from Supabase directly without editing it.
+    psycopg3 connect_args for cloud hosts.
+    sslmode="require" → libpq-style SSL (psycopg3 passes to start_tls).
+    prepare_threshold=None → disable server-side prepared statements for
+    pgBouncer Transaction Pooler (equivalent to asyncpg statement_cache_size=0).
     """
-    if url.startswith("postgresql://") or url.startswith("postgres://"):
-        url = "postgresql+asyncpg://" + url.split("://", 1)[1]
-    elif url.startswith("postgresql+psycopg2://"):
-        url = "postgresql+asyncpg://" + url.split("://", 1)[1]
-    return url
+    args: dict = {}
+    if any(h in url for h in _CLOUD_HOSTS):
+        args["sslmode"] = "require"
+        if any(m in url for m in _POOLER_MARKERS):
+            args["prepare_threshold"] = None
+    return args
 
 
-def _clean_url(url: str) -> str:
-    """Remove psycopg2-style sslmode param — asyncpg ignores it and may warn."""
-    import re
-    url = _ensure_asyncpg_scheme(url)
-    return re.sub(r"[?&]sslmode=\w+", "", url)
-
+# ── Engine factory ────────────────────────────────────────────────────────────
 
 def get_engine():
     global _engine
-    if _engine is None:
-        if not settings.database_url:
-            raise RuntimeError(
-                "DATABASE_URL is not configured. "
-                "Add it in your Vercel project environment variables. "
-                "Example: postgresql+asyncpg://user:pass@host:5432/dbname"
-            )
-        url = _clean_url(settings.database_url)
-        connect_args = _build_connect_args(url)
-        if os.environ.get("VERCEL"):
-            # Supabase Transaction Pooler (port 6543) is pgBouncer — it handles
-            # connection pooling server-side.  Use NullPool on our side so each
-            # serverless invocation gets a fresh connection through pgBouncer
-            # rather than maintaining a persistent pool that conflicts with
-            # pgBouncer's own connection management.
-            from sqlalchemy.pool import NullPool
-            _engine = create_async_engine(
-                url,
-                poolclass=NullPool,
-                connect_args=connect_args,
-                echo=False,
-            )
-        else:
-            _engine = create_async_engine(
-                url,
-                pool_pre_ping=True,
-                pool_size=5,
-                max_overflow=10,
-                connect_args=connect_args,
-                echo=not settings.is_production,
-            )
+    if _engine is not None:
+        return _engine
+
+    raw = settings.database_url
+    if not raw:
+        raise RuntimeError(
+            "DATABASE_URL is not configured. "
+            "Add it in your Vercel project environment variables. "
+            "Use the Supabase Transaction Pooler URL (port 6543), e.g.: "
+            "postgresql://postgres.XXXX:PASS@aws-0-REGION.pooler.supabase.com:6543/postgres"
+        )
+
+    if os.environ.get("VERCEL"):
+        # On Vercel: use psycopg3 to avoid uvloop libuv-native SSL (EBUSY).
+        # NullPool: pgBouncer pools server-side; our side should not pool.
+        url = _to_driver_url(raw, "psycopg")
+        connect_args = _psycopg_connect_args(url)
+        from sqlalchemy.pool import NullPool
+        _engine = create_async_engine(
+            url,
+            poolclass=NullPool,
+            connect_args=connect_args,
+            echo=False,
+        )
+    else:
+        # Local / non-Vercel: asyncpg is faster and has no uvloop issue.
+        url = _clean_url(raw)
+        connect_args = _asyncpg_connect_args(url)
+        _engine = create_async_engine(
+            url,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
+            connect_args=connect_args,
+            echo=not settings.is_production,
+        )
+
     return _engine
 
 
@@ -134,8 +171,8 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI dependency that yields a database session.
-    Raises HTTP 503 (not 500) for any database unavailability so the frontend
-    can display a helpful setup message instead of a generic error.
+    Raises HTTP 503 (not 500) so the frontend shows a setup message
+    instead of a generic error.
     """
     from fastapi import HTTPException
     from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -157,7 +194,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
                 raise HTTPException(
                     status_code=503,
                     detail=(
-                        "Database unavailable. "
+                        f"Database unavailable. "
                         f"Check DATABASE_URL in Vercel environment variables. ({type(e).__name__})"
                     ),
                 )
@@ -172,17 +209,15 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         raise HTTPException(
             status_code=503,
             detail=(
-                "Cannot connect to database. "
+                f"Cannot connect to database. "
                 f"Check DATABASE_URL in Vercel environment variables. ({type(e).__name__})"
             ),
         )
     except Exception as e:
-        # Catch raw OS/socket errors (e.g. ConnectionRefusedError) that asyncpg
-        # raises before SQLAlchemy can wrap them in OperationalError.
         raise HTTPException(
             status_code=503,
             detail=(
-                "Cannot reach database host. "
+                f"Cannot reach database host. "
                 f"Check DATABASE_URL in Vercel environment variables. ({type(e).__name__})"
             ),
         )
