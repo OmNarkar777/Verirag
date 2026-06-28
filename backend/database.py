@@ -17,10 +17,20 @@ Why not asyncpg on Vercel:
   handle memory to the next create_connection() call, which sees a handle
   already in CONNECTING state → UV_EBUSY ([Errno 16]).
 
+  NOTE: asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy()) in
+  main.py prevents uvloop from being installed, so the raw asyncpg path might
+  also work — but we keep psycopg3 SYNC for safety.
+
 Why psycopg3 SYNC works:
   Sync psycopg3 uses the C libpq library directly, NOT asyncio or libuv.
   libpq creates regular blocking sockets via the OS syscall layer — completely
   isolated from the event loop.  No EBUSY, no SSL path, no libuv.
+
+URL parsing:
+  DATABASE_URL passwords may contain '@' (common in Supabase auto-generated
+  passwords).  SQLAlchemy's make_url() splits on the FIRST '@', corrupting the
+  host component. We always parse via Python's urlparse (which uses the LAST '@')
+  then build a SQLAlchemy URL.create() object to avoid this.
 
 Threading model:
   Each _VercelSession wraps a sync psycopg3 Session in a dedicated
@@ -56,6 +66,27 @@ _sync_session_factory = None  # sync session factory (Vercel)
 
 _CLOUD_HOSTS = ("supabase.com", "neon.tech", "neon.database.azure.com", "render.com")
 _POOLER_MARKERS = ("pooler.supabase.com", ":6543")
+
+
+# ── URL parsing ───────────────────────────────────────────────────────────────
+
+def _parse_url_parts(raw: str) -> dict:
+    """
+    Parse DATABASE_URL using Python's urlparse which uses the LAST '@' as the
+    userinfo/host boundary — correctly handling passwords that contain '@'.
+
+    SQLAlchemy's make_url() splits on the FIRST '@', corrupting the host when
+    the password contains '@' (common in Supabase auto-generated passwords).
+    """
+    from urllib.parse import urlparse, unquote
+    p = urlparse(raw)
+    return {
+        "host": p.hostname or "localhost",
+        "port": p.port or 5432,
+        "database": (p.path or "/postgres").lstrip("/") or "postgres",
+        "username": unquote(p.username or ""),
+        "password": unquote(p.password or ""),
+    }
 
 
 # ── URL normalisation ─────────────────────────────────────────────────────────
@@ -133,16 +164,32 @@ def _get_sync_engine():
         )
 
     from sqlalchemy import create_engine
-    url = _to_driver_url(raw, "psycopg")
-    connect_args = _psycopg_connect_args(url)
-    # Override to sslmode=disable: TCP probe confirms port 6543 is reachable.
-    # If libpq also returns EBUSY with SSL, disabling SSL isolates whether
-    # the bug is in OpenSSL or in the TCP connect path.
-    # Supabase pgBouncer Transaction Pooler may accept non-SSL; the
-    # pgBouncer→server leg is encrypted inside Supabase's VPC.
-    connect_args["sslmode"] = "disable"
+    from sqlalchemy.engine import URL as SAURL
+
+    # Parse with urlparse (handles '@' in password) then build URL object to
+    # bypass SQLAlchemy's make_url() which splits on the FIRST '@', corrupting
+    # the host when the password contains '@'.
+    parts = _parse_url_parts(raw)
+    sa_url = SAURL.create(
+        drivername="postgresql+psycopg",
+        username=parts["username"],
+        password=parts["password"],
+        host=parts["host"],
+        port=parts["port"],
+        database=parts["database"],
+    )
+
+    is_cloud = any(h in (parts["host"] or "") for h in _CLOUD_HOSTS)
+    is_pooler = parts["port"] == 6543 or "pooler" in (parts["host"] or "")
+    connect_args: dict = {}
+    if is_cloud:
+        connect_args["sslmode"] = "require"  # Supabase requires SSL; libpq C-native, no libuv
+    if is_pooler:
+        connect_args["prepare_threshold"] = None  # pgBouncer: disable prepared statements
+    connect_args["connect_timeout"] = 10
+
     _sync_engine = create_engine(
-        url,
+        sa_url,
         poolclass=NullPool,      # pgBouncer pools server-side; no client pool needed
         connect_args=connect_args,
         echo=False,
@@ -261,10 +308,28 @@ def get_engine():
             "postgresql://postgres.XXXX:PASS@aws-0-REGION.pooler.supabase.com:6543/postgres"
         )
 
-    url = _clean_url(raw)
-    connect_args = _asyncpg_connect_args(url)
+    # Use URL.create() so passwords containing '@' are handled correctly
+    from sqlalchemy.engine import URL as SAURL
+    parts = _parse_url_parts(raw)
+    sa_url = SAURL.create(
+        drivername="postgresql+asyncpg",
+        username=parts["username"],
+        password=parts["password"],
+        host=parts["host"],
+        port=parts["port"],
+        database=parts["database"],
+    )
+
+    is_cloud = any(h in (parts["host"] or "") for h in _CLOUD_HOSTS)
+    is_pooler = parts["port"] == 6543 or "pooler" in (parts["host"] or "")
+    connect_args: dict = {}
+    if is_cloud:
+        connect_args["ssl"] = "require"
+    if is_pooler:
+        connect_args["statement_cache_size"] = 0
+
     _engine = create_async_engine(
-        url,
+        sa_url,
         pool_pre_ping=True,
         pool_size=5,
         max_overflow=10,
