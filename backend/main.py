@@ -136,8 +136,22 @@ async def lifespan(application: FastAPI):
     except Exception as e:
         logger.error(f"RAGAS runner init failed (non-fatal): {e}")
 
-    # Verify DB connectivity (non-fatal)
+    # Run Alembic migrations then verify DB connectivity (both non-fatal)
     if s.database_url:
+        try:
+            import asyncio
+            from alembic.config import Config as AlembicConfig
+            from alembic import command as alembic_command
+
+            alembic_cfg = AlembicConfig("alembic.ini")
+            # Alembic is synchronous — run in thread pool to avoid blocking event loop
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: alembic_command.upgrade(alembic_cfg, "head")
+            )
+            logger.info("Alembic migrations applied (head)")
+        except Exception as e:
+            logger.error(f"Alembic migration failed (non-fatal, tables may already exist): {e}")
+
         try:
             async with get_db_context() as db:
                 await db.execute(text("SELECT 1"))
@@ -272,12 +286,16 @@ async def system_status():
         missing.append("GROQ_API_KEY")
     if not s.database_url:
         missing.append("DATABASE_URL")
+    # HF_TOKEN is optional — embeddings work anonymously with stricter rate limits
+
+    warnings = []
     if not s.hf_token:
-        missing.append("HF_TOKEN")
+        warnings.append("HF_TOKEN")
 
     return {
         "configured": len(missing) == 0,
         "missing_vars": missing,
+        "optional_missing": warnings,
         "environment": s.app_env,
         "version": "1.0.0",
         "setup_guide": "https://github.com/OmNarkar777/Verirag#deployment" if missing else None,

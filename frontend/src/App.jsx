@@ -33,24 +33,51 @@ class ErrorBoundary extends Component {
   }
 }
 
-function SetupBanner({ missing }) {
-  if (!missing?.length) return null
+function SetupBanner({ missing, optional }) {
+  if (!missing?.length && !optional?.length) return null
   return (
-    <div className="bg-amber-500/10 border-b border-amber-500/20 px-6 py-2.5 flex items-center gap-3 text-xs shrink-0">
-      <div className="w-4 h-4 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
-        <span className="text-amber-400 font-bold" style={{ fontSize: 9 }}>!</span>
+    <div className={`border-b px-6 py-2.5 flex items-center gap-3 text-xs shrink-0 ${
+      missing?.length
+        ? 'bg-amber-500/10 border-amber-500/20'
+        : 'bg-slate-800/50 border-slate-700/50'
+    }`}>
+      <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${
+        missing?.length
+          ? 'bg-amber-500/20 border border-amber-500/40'
+          : 'bg-slate-700 border border-slate-600'
+      }`}>
+        <span className={`font-bold ${missing?.length ? 'text-amber-400' : 'text-slate-400'}`} style={{ fontSize: 9 }}>!</span>
       </div>
-      <span className="text-amber-300 font-medium">Setup required:</span>
-      <span className="text-amber-400/80">
-        Set{' '}
-        {missing.map((v, i) => (
-          <span key={v}>
-            <code className="text-amber-300 font-mono">{v}</code>
-            {i < missing.length - 1 ? ', ' : ''}
+      {missing?.length > 0 && (
+        <>
+          <span className="text-amber-300 font-medium">Setup required:</span>
+          <span className="text-amber-400/80">
+            Set{' '}
+            {missing.map((v, i) => (
+              <span key={v}>
+                <code className="text-amber-300 font-mono">{v}</code>
+                {i < missing.length - 1 ? ', ' : ''}
+              </span>
+            ))}
+            {' '}in your Vercel environment variables.
           </span>
-        ))}
-        {' '}in your Vercel environment variables to enable all features.
-      </span>
+        </>
+      )}
+      {!missing?.length && optional?.length > 0 && (
+        <>
+          <span className="text-slate-400 font-medium">Optional:</span>
+          <span className="text-slate-500">
+            Set{' '}
+            {optional.map((v, i) => (
+              <span key={v}>
+                <code className="text-slate-400 font-mono">{v}</code>
+                {i < optional.length - 1 ? ', ' : ''}
+              </span>
+            ))}
+            {' '}for faster embeddings (currently using anonymous HuggingFace rate limits).
+          </span>
+        </>
+      )}
     </div>
   )
 }
@@ -83,8 +110,8 @@ function Layout() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Header title={meta.title} subtitle={meta.subtitle} />
-        {status && !status.configured && (
-          <SetupBanner missing={status.missing_vars} />
+        {status && (!status.configured || status.optional_missing?.length > 0) && (
+          <SetupBanner missing={status.missing_vars} optional={status.optional_missing} />
         )}
         <main className="flex-1 overflow-y-auto">
           <ErrorBoundary>

@@ -31,7 +31,11 @@ async def health_check() -> HealthResponse:
                 await db.execute(text("SELECT 1"))
             db_status = "ok"
         except Exception as e:
-            db_status = f"error: {str(e)[:120]}"
+            err_str = str(e)
+            if "localhost" in settings.database_url and ("Connection refused" in err_str or "111" in err_str):
+                db_status = "error: DATABASE_URL points to localhost — set a cloud PostgreSQL URL (e.g. Supabase)"
+            else:
+                db_status = f"error: {err_str[:120]}"
 
     # Check ChromaDB
     try:
@@ -40,7 +44,11 @@ async def health_check() -> HealthResponse:
         stats = vs.get_collection_stats()
         chroma_status = f"ok (docs={stats['document_count']})"
     except Exception as e:
-        chroma_status = f"error: {str(e)[:120]}"
+        err_str = str(e)
+        if "libgomp" in err_str or "cannot open shared object" in err_str:
+            chroma_status = "unavailable: native HNSW library not available in serverless; use Docker for full RAG"
+        else:
+            chroma_status = f"error: {err_str[:120]}"
 
     overall = "ok" if (db_status == "ok" and chroma_status.startswith("ok")) else "degraded"
 
