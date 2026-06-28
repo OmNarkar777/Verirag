@@ -1,4 +1,4 @@
-﻿"""evaluator/ragas_runner.py â€” Core RAGAS evaluation engine with regression detection."""
+﻿"""evaluator/ragas_runner.py â€" Core RAGAS evaluation engine with regression detection."""
 from __future__ import annotations
 import asyncio
 import uuid
@@ -85,7 +85,7 @@ class RagasRunner:
             wrapped_llm = LangchainLLMWrapper(self.judge_llm)
             wrapped_emb = LangchainEmbeddingsWrapper(self.embeddings)
         except ImportError:
-            # Older RAGAS version â€” direct assignment works
+            # Older RAGAS version â€" direct assignment works
             wrapped_llm = self.judge_llm
             wrapped_emb = self.embeddings
 
@@ -128,7 +128,7 @@ class RagasRunner:
             dataset = build_ragas_dataset(test_cases)
             metrics = self._configure_metrics()
 
-            logger.info(“Running RAGAS evaluate() in thread pool...”)
+            logger.info("Running RAGAS evaluate() in thread pool...")
 
             def _ragas_in_thread():
                 # Python 3.12: asyncio.get_event_loop() raises RuntimeError in non-main
@@ -154,13 +154,13 @@ class RagasRunner:
             await self._persist_cases(eval_run_id, test_cases, scores_df)
             await self._complete_eval_run(eval_run_id, scores_df)
 
-            # Regression detection â€” non-fatal
+            # Regression detection â€" non-fatal
             try:
                 await self._run_regression_check(eval_run_id)
             except Exception as e:
                 logger.warning(f"Regression check failed (non-fatal): {e}")
 
-            # LangSmith tagging â€” non-fatal
+            # LangSmith tagging â€" non-fatal
             try:
                 await self._tag_langsmith(eval_run_id)
             except Exception as e:
