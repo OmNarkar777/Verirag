@@ -14,10 +14,18 @@ return HTTP 503 with a clear message rather than crashing the process.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import traceback
 from contextlib import asynccontextmanager
+
+# Vercel's @vercel/python ASGI handler installs uvloop when it's importable.
+# uvloop's uv_tcp_connect returns UV_EBUSY on SSL connections to Supabase
+# in the Lambda environment. Force the standard asyncio policy before the
+# event loop is created so we always use SelectorEventLoop on Vercel.
+if os.environ.get("VERCEL"):
+    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
