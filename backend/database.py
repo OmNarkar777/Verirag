@@ -135,6 +135,12 @@ def _get_sync_engine():
     from sqlalchemy import create_engine
     url = _to_driver_url(raw, "psycopg")
     connect_args = _psycopg_connect_args(url)
+    # Override to sslmode=disable: TCP probe confirms port 6543 is reachable.
+    # If libpq also returns EBUSY with SSL, disabling SSL isolates whether
+    # the bug is in OpenSSL or in the TCP connect path.
+    # Supabase pgBouncer Transaction Pooler may accept non-SSL; the
+    # pgBouncer→server leg is encrypted inside Supabase's VPC.
+    connect_args["sslmode"] = "disable"
     _sync_engine = create_engine(
         url,
         poolclass=NullPool,      # pgBouncer pools server-side; no client pool needed
