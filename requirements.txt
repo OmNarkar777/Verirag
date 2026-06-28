@@ -4,11 +4,12 @@ python-multipart==0.0.9
 
 sqlalchemy[asyncio]==2.0.30
 asyncpg==0.29.0
-# psycopg[asyncio] is used on Vercel instead of asyncpg.
-# uvloop's create_connection(ssl=ctx) uses libuv native SSL which returns
-# UV_EBUSY on Lambda.  psycopg3 uses asyncio.start_tls() (Python ssl
-# module) and bypasses the issue entirely.
-psycopg[asyncio]==3.2.3
+# psycopg[asyncio,binary] is used on Vercel instead of asyncpg.
+# - asyncio: enables async SQLAlchemy support via asyncio.start_tls()
+#   (Python ssl module, bypasses uvloop libuv SSL which returns EBUSY)
+# - binary: bundles libpq inside the wheel — no system libpq needed on
+#   Vercel Lambda (Amazon Linux 2 / manylinux2014_x86_64 compatible)
+psycopg[asyncio,binary]==3.2.3
 alembic==1.13.1
 
 pydantic==2.11.7
