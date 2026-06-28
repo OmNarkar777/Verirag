@@ -389,52 +389,8 @@ async def diag():
         except Exception as _e5:
             direct_psycopg3_probe = f"{type(_e5).__name__}: {traceback.format_exc()}"
 
-    # psycopg3 from custom ThreadPoolExecutor(max_workers=1) — same as _VercelSession
-    custom_thread_psycopg3_probe = "skipped"
-    # SA connect args probe — shows exactly what SQLAlchemy passes to psycopg3
-    sa_connect_args_probe: dict = {}
-    if os.environ.get("VERCEL") and db_url_raw:
-        from concurrent.futures import ThreadPoolExecutor as _TPE5
-        try:
-            def _psycopg_custom_thread():
-                import asyncio as _a6
-                _a6.set_event_loop(None)
-                import psycopg as _pg6
-                from urllib.parse import urlparse as _up6
-                _pu6 = _up6(db_url_raw)
-                _conn6 = _pg6.connect(
-                    host=_pu6.hostname,
-                    port=_pu6.port or 6543,
-                    dbname=(_pu6.path or "/postgres").lstrip("/"),
-                    user=_pu6.username,
-                    password=_pu6.password,
-                    sslmode="disable",
-                    prepare_threshold=None,
-                )
-                _v6 = _conn6.execute("SELECT version()").fetchone()[0]
-                _conn6.close()
-                return _v6
-            _exe6 = _TPE5(max_workers=1, thread_name_prefix="verirag-db")
-            _loop6 = asyncio.get_running_loop()
-            custom_thread_psycopg3_probe = await _loop6.run_in_executor(_exe6, _psycopg_custom_thread)
-            _exe6.shutdown(wait=False)
-        except Exception as _e6:
-            _exe6.shutdown(wait=False)
-            custom_thread_psycopg3_probe = f"{type(_e6).__name__}: {traceback.format_exc()}"
-        try:
-            from backend.database import _get_sync_engine as _gse
-            _eng6 = _gse()
-            _dial6 = _eng6.dialect
-            _cargs6, _cparams6 = _dial6.create_connect_args(_eng6.url)
-            _safe6 = {k: ("***" if k in ("password", "conninfo") else v)
-                      for k, v in _cparams6.items()}
-            if "conninfo" in _cparams6:
-                import re as _re6
-                _ci = _cparams6["conninfo"]
-                _safe6["conninfo_masked"] = _re6.sub(r"password=[^\s]+", "password=***", _ci)
-            sa_connect_args_probe = {"cargs": _cargs6, "cparams": _safe6}
-        except Exception as _e6b:
-            sa_connect_args_probe = {"err": f"{type(_e6b).__name__}: {_e6b}"}
+    custom_thread_psycopg3_probe = "see /diag/psycopg3"
+    sa_connect_args_probe: dict = {"see": "/diag/psycopg3"}
 
     # Live DB probe — uses get_db_context() which routes through sync psycopg3
     # on Vercel (libpq, not asyncio/uvloop → no EBUSY) or asyncpg locally.
@@ -505,6 +461,89 @@ async def diag():
         "event_loop": loop_type,
         "uvloop": uvloop_info,
     }
+
+
+# ── psycopg3 thread diagnostic (focused, fast) ───────────────────────────────
+
+@app.get("/diag/psycopg3", include_in_schema=False)
+async def diag_psycopg3():
+    """
+    Isolates EBUSY: tests psycopg3.connect() from asyncio.to_thread() vs
+    custom ThreadPoolExecutor(max_workers=1) vs SQLAlchemy sync engine.
+    """
+    results: dict = {}
+    db_url_raw = os.environ.get("DATABASE_URL", "")
+    if not db_url_raw:
+        return {"error": "DATABASE_URL not set"}
+
+    from urllib.parse import urlparse as _up
+    _pu = _up(db_url_raw)
+    _host = _pu.hostname
+    _port = _pu.port or 6543
+    _dbname = (_pu.path or "/postgres").lstrip("/")
+    _user = _pu.username
+    _password = _pu.password
+
+    def _psycopg_connect(label=""):
+        import asyncio as _a
+        _a.set_event_loop(None)
+        import psycopg as _pg
+        try:
+            conn = _pg.connect(
+                host=_host, port=_port, dbname=_dbname,
+                user=_user, password=_password,
+                sslmode="disable", prepare_threshold=None,
+                connect_timeout=8,
+            )
+            v = conn.execute("SELECT current_user || '@' || version()").fetchone()[0]
+            conn.close()
+            return v
+        except Exception as ex:
+            return f"{type(ex).__name__}: {ex}"
+
+    # Test 1: asyncio.to_thread() (asyncio's default executor)
+    try:
+        results["to_thread"] = await asyncio.to_thread(_psycopg_connect)
+    except Exception as ex:
+        results["to_thread"] = f"{type(ex).__name__}: {ex}"
+
+    # Test 2: custom ThreadPoolExecutor(max_workers=1) — same as _VercelSession
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    _exe = _TPE(max_workers=1, thread_name_prefix="verirag-db")
+    try:
+        results["custom_tpe"] = await asyncio.get_running_loop().run_in_executor(
+            _exe, _psycopg_connect
+        )
+    except Exception as ex:
+        results["custom_tpe"] = f"{type(ex).__name__}: {ex}"
+    finally:
+        _exe.shutdown(wait=False)
+
+    # Test 3: SQLAlchemy sync engine connect args (what SA passes to psycopg3)
+    try:
+        from backend.database import _get_sync_engine as _gse
+        import re as _re
+        eng = _gse()
+        cargs, cparams = eng.dialect.create_connect_args(eng.url)
+        safe = {k: ("***" if k in ("password",) else v) for k, v in cparams.items()}
+        if "conninfo" in cparams:
+            safe["conninfo"] = _re.sub(r"password=[^\s]+", "password=***", cparams["conninfo"])
+        results["sa_connect_args"] = {"positional": cargs, "kwargs": safe}
+    except Exception as ex:
+        results["sa_connect_args"] = f"{type(ex).__name__}: {ex}"
+
+    # Test 4: SQLAlchemy sync engine actual connect (via _VercelSession)
+    try:
+        from backend.database import get_db_context as _gdc
+        from sqlalchemy import text as _t
+        async with _gdc() as db:
+            row = await db.execute(_t("SELECT current_user || '@' || version()"))
+            results["sa_vercel_session"] = row.scalar()
+    except Exception as ex:
+        results["sa_vercel_session"] = f"{type(ex).__name__}: {traceback.format_exc()[-600:]}"
+
+    results["user_from_url"] = _user
+    return results
 
 
 # ── System Status ─────────────────────────────────────────────────────────────
