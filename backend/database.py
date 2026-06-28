@@ -123,10 +123,19 @@ def get_engine():
         )
 
     if os.environ.get("VERCEL"):
-        # On Vercel: use psycopg3 to avoid uvloop libuv-native SSL (EBUSY).
-        # NullPool: pgBouncer pools server-side; our side should not pool.
-        url = _to_driver_url(raw, "psycopg")
-        connect_args = _psycopg_connect_args(url)
+        # uvloop 0.22.1 on Vercel Lambda returns UV_EBUSY for ALL SSL
+        # connections — both asyncpg (create_connection(ssl=ctx)) and
+        # psycopg3 (start_tls) route through uvloop's libuv SSL which is
+        # broken.  Plain TCP (ssl=False / sslmode=disable) bypasses the
+        # SSL path entirely; uvloop's TCP-only connect works fine.
+        # Supabase pgBouncer Transaction Pooler accepts non-SSL clients
+        # (server sets client_tls_sslmode=allow by default).
+        # NullPool: pgBouncer handles connection pooling server-side.
+        url = _to_driver_url(raw, "asyncpg")
+        connect_args: dict = {
+            "ssl": False,
+            "statement_cache_size": 0,  # required for pgBouncer tx pooler
+        }
         from sqlalchemy.pool import NullPool
         _engine = create_async_engine(
             url,
