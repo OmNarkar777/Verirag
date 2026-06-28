@@ -1,6 +1,6 @@
 """config.py - Centralized settings via pydantic-settings."""
 from functools import lru_cache
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +50,24 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development")
     log_level: str = Field(default="INFO")
     api_v1_prefix: str = Field(default="/api/v1")
+
+    @field_validator("langchain_tracing_v2", mode="before")
+    @classmethod
+    def coerce_bool(cls, v: object) -> bool:
+        # Vercel stores empty-string env vars as "" — treat as False
+        if v is None or v == "":
+            return False
+        if isinstance(v, bool):
+            return v
+        return str(v).lower() in ("true", "1", "yes", "on")
+
+    @field_validator("chroma_persist_dir", mode="before")
+    @classmethod
+    def coerce_chroma_dir(cls, v: object) -> str:
+        # Fall back to /tmp when the env var is set but empty
+        if not v or str(v).strip() == "":
+            return "/tmp/chroma_data"
+        return str(v)
 
     @computed_field
     @property
