@@ -14,18 +14,27 @@ return HTTP 503 with a clear message rather than crashing the process.
 
 import os
 import sys
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from loguru import logger
-from sqlalchemy import text
+_STARTUP_ERROR: str | None = None
 
-from backend.config import get_settings
-from backend.database import get_db_context, get_engine
+try:
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.middleware.gzip import GZipMiddleware
+    from loguru import logger
+    from sqlalchemy import text
 
-settings = get_settings()
+    from backend.config import get_settings
+    from backend.database import get_db_context, get_engine
+
+    settings = get_settings()
+    _IMPORTS_OK = True
+except Exception:
+    _STARTUP_ERROR = traceback.format_exc()
+    _IMPORTS_OK = False
+    settings = None  # type: ignore[assignment]
 
 # Vercel sets VERCEL=1 in its serverless runtime environment
 _IS_VERCEL = bool(os.environ.get("VERCEL"))
@@ -139,9 +148,25 @@ async def lifespan(app: FastAPI):
 
 # ── FastAPI Application ────────────────────────────────────────────────────────
 
-app = FastAPI(
-    title="VeriRAG",
-    description="""
+if not _IMPORTS_OK:
+    # Surface the real boot error as a JSON response so Vercel logs capture it
+    from fastapi import FastAPI as _FastAPI
+
+    app = _FastAPI(title="VeriRAG [BOOT ERROR]")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def _boot_error(path: str):
+        return {"boot_error": _STARTUP_ERROR, "env_vars": {
+            k: ("set" if v else "empty")
+            for k, v in os.environ.items()
+            if k in ("DATABASE_URL", "GROQ_API_KEY", "HF_TOKEN", "LANGCHAIN_TRACING_V2",
+                     "CHROMA_PERSIST_DIR", "APP_ENV", "VERCEL", "VERCEL_ENV")
+        }}
+
+else:
+    app = FastAPI(
+        title="VeriRAG",
+        description="""
 ## VeriRAG - Production RAG Evaluation & Observability Platform
 
 VeriRAG evaluates RAG pipeline quality using [RAGAS](https://docs.ragas.io) metrics:
@@ -164,64 +189,63 @@ Set these environment variables in your deployment:
 - `DATABASE_URL` - PostgreSQL connection string (postgresql+asyncpg://...)
 - `HF_TOKEN` - HuggingFace token for embedding API
     """,
-    version="1.0.0",
-    lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
-)
+        version="1.0.0",
+        lifespan=lifespan,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
 
-# ── Middleware ─────────────────────────────────────────────────────────────────
+    # ── Middleware ─────────────────────────────────────────────────────────────────
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+    # ── Routers ───────────────────────────────────────────────────────────────────
 
-from backend.routers import health, eval, pipeline  # noqa: E402
+    from backend.routers import health, eval, pipeline  # noqa: E402
 
-app.include_router(health.router)
-app.include_router(eval.router, prefix=settings.api_v1_prefix)
-app.include_router(pipeline.router, prefix=settings.api_v1_prefix)
+    app.include_router(health.router)
+    app.include_router(eval.router, prefix=settings.api_v1_prefix)
+    app.include_router(pipeline.router, prefix=settings.api_v1_prefix)
 
-# ── System Status ──────────────────────────────────────────────────────────────
+    # ── System Status ──────────────────────────────────────────────────────────────
 
-@app.get("/api/v1/system/status", include_in_schema=False)
-async def system_status():
-    """Returns configuration status - used by frontend to show setup guide."""
-    missing = []
-    if not settings.groq_api_key:
-        missing.append("GROQ_API_KEY")
-    if not settings.database_url:
-        missing.append("DATABASE_URL")
-    if not settings.hf_token:
-        missing.append("HF_TOKEN")
+    @app.get("/api/v1/system/status", include_in_schema=False)
+    async def system_status():
+        """Returns configuration status - used by frontend to show setup guide."""
+        missing = []
+        if not settings.groq_api_key:
+            missing.append("GROQ_API_KEY")
+        if not settings.database_url:
+            missing.append("DATABASE_URL")
+        if not settings.hf_token:
+            missing.append("HF_TOKEN")
 
-    return {
-        "configured": len(missing) == 0,
-        "missing_vars": missing,
-        "environment": settings.app_env,
-        "version": "1.0.0",
-        "setup_guide": "https://github.com/OmNarkar777/Verirag#deployment" if missing else None,
-    }
+        return {
+            "configured": len(missing) == 0,
+            "missing_vars": missing,
+            "environment": settings.app_env,
+            "version": "1.0.0",
+            "setup_guide": "https://github.com/OmNarkar777/Verirag#deployment" if missing else None,
+        }
 
+    # ── Root ──────────────────────────────────────────────────────────────────────
 
-# ── Root ──────────────────────────────────────────────────────────────────────
-
-@app.get("/", include_in_schema=False)
-async def root():
-    return {
-        "service": "VeriRAG",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/health",
-        "api": settings.api_v1_prefix,
-        "status": "/api/v1/system/status",
-    }
+    @app.get("/", include_in_schema=False)
+    async def root():
+        return {
+            "service": "VeriRAG",
+            "version": "1.0.0",
+            "docs": "/docs",
+            "health": "/health",
+            "api": settings.api_v1_prefix,
+            "status": "/api/v1/system/status",
+        }
