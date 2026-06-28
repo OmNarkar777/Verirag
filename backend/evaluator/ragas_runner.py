@@ -21,22 +21,35 @@ settings = get_settings()
 
 
 class HFInferenceEmbeddings(Embeddings):
-    """LangChain-compatible wrapper using HuggingFace Inference API (no local torch)."""
+    """
+    LangChain-compatible embeddings wrapper.
+
+    When HF_TOKEN is set: calls HuggingFace Inference API (sentence-transformers/all-MiniLM-L6-v2).
+    When HF_TOKEN is absent (default on Vercel): uses the local TF-IDF hash embedder so
+    RAGAS evaluation works fully offline. Both paths produce 384-dim normalised vectors;
+    retrieval quality differs but all metrics compute correctly.
+    """
     def __init__(self):
-        self._client = InferenceClient(token=settings.hf_token or None)
+        self._client = InferenceClient(token=settings.hf_token or None) if settings.hf_token else None
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        # huggingface_hub 0.23.x: no normalize param; BAAI/bge models normalize by default.
-        response = self._client.feature_extraction(
-            text=texts,
-            model=settings.embedding_model,
-        )
-        if hasattr(response, "tolist"):
-            result = response.tolist()
-            if result and not isinstance(result[0], list):
-                return [result]
-            return result
-        return [list(vec) for vec in response]
+        from backend.rag.vectorstore import _fallback_embed
+        if not settings.hf_token or self._client is None:
+            return _fallback_embed(texts)
+        try:
+            response = self._client.feature_extraction(
+                text=texts,
+                model=settings.embedding_model,
+            )
+            if hasattr(response, "tolist"):
+                result = response.tolist()
+                if result and not isinstance(result[0], list):
+                    return [result]
+                return result
+            return [list(vec) for vec in response]
+        except Exception as e:
+            logger.warning(f"HF embeddings failed ({str(e)[:80]}); using local TF-IDF fallback")
+            return _fallback_embed(texts)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._embed(texts)

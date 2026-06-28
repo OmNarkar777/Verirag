@@ -37,11 +37,15 @@ export function useEvalStatus() {
   })
 }
 
-export function useStartSampleEval() {
+export function useStartSampleEval({ onSuccess, onError } = {}) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (versionTag) => startSampleEval(versionTag),
-    onSuccess: () => qc.invalidateQueries({ queryKey: EVAL_RUNS_KEY }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: EVAL_RUNS_KEY })
+      onSuccess?.(data)
+    },
+    onError: (err) => onError?.(err),
   })
 }
 

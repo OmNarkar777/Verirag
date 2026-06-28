@@ -13,7 +13,17 @@ export default function PipelinePage() {
   const [versionTag, setVersionTag] = useState('v1.0.0-live')
   const [submitted, setSubmitted] = useState(false)
   const [submitError, setSubmitError] = useState('')
-  const startSample = useStartSampleEval()
+  const [sampleNotice, setSampleNotice] = useState(null) // { type: 'success'|'error', msg }
+  const startSample = useStartSampleEval({
+    onSuccess: (data) => setSampleNotice({
+      type: 'success',
+      msg: `Evaluation started (${data?.eval_run_id?.slice(0, 8) ?? '…'}). Dashboard will update when complete.`,
+    }),
+    onError: (err) => setSampleNotice({
+      type: 'error',
+      msg: err?.response?.data?.detail ?? err?.message ?? 'Failed to start evaluation.',
+    }),
+  })
 
   const handleEvalCase = (c) => {
     setEvalCase(c)
@@ -105,13 +115,29 @@ export default function PipelinePage() {
         <p className="text-xs text-slate-500 mb-3">
           12 AI/ML reference documents are pre-loaded — query them immediately without uploading anything.
         </p>
+        {sampleNotice && (
+          <div className={`mb-3 rounded-lg border px-4 py-2.5 text-xs flex items-start justify-between gap-3 ${
+            sampleNotice.type === 'success'
+              ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400'
+              : 'border-red-500/30 bg-red-500/5 text-red-400'
+          }`}>
+            <span>{sampleNotice.msg}</span>
+            <button onClick={() => setSampleNotice(null)} className="shrink-0 opacity-60 hover:opacity-100">✕</button>
+          </div>
+        )}
         <div className="flex flex-wrap gap-3">
           <button
-            onClick={() => startSample.mutate('v0.0.1-quick')}
+            onClick={() => { setSampleNotice(null); startSample.mutate('v0.0.1-quick') }}
             disabled={startSample.isPending}
-            className="text-xs border border-slate-700 hover:border-slate-600 text-slate-300 px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
+            className="text-xs border border-slate-700 hover:border-slate-600 text-slate-300 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
           >
-            {startSample.isPending ? 'Starting...' : 'Run Sample Evaluation (10 cases)'}
+            {startSample.isPending && (
+              <svg className="animate-spin w-3 h-3 text-brand-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+              </svg>
+            )}
+            {startSample.isPending ? 'Starting evaluation…' : 'Run Sample Evaluation (10 cases)'}
           </button>
           <a href="/docs" target="_blank" rel="noreferrer"
             className="text-xs border border-slate-700 hover:border-slate-600 text-slate-400 px-4 py-2 rounded-lg transition-colors">
