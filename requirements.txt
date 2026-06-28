@@ -14,7 +14,7 @@ langchain==0.2.1
 langchain-groq==0.1.6
 langchain-community==0.2.1
 langchain-core==0.2.3
-langsmith==0.1.77
+langsmith==0.1.147
 
 huggingface_hub==0.23.2
 
