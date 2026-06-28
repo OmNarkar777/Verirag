@@ -286,6 +286,18 @@ async def diag():
         except Exception as probe_exc:
             db_probe = traceback.format_exc()
 
+    # Report active event loop type to detect if uvloop is being used
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    loop_type = type(loop).__module__ + "." + type(loop).__name__
+
+    # Report whether uvloop is importable (transitive dep check)
+    try:
+        import uvloop as _uvloop
+        uvloop_info = f"installed v{getattr(_uvloop, '__version__', 'unknown')}"
+    except ImportError:
+        uvloop_info = "not installed"
+
     return {
         "boot_ok": _BOOT_ERROR is None,
         "boot_error": _BOOT_ERROR,
@@ -293,6 +305,8 @@ async def diag():
         "db_url_host": db_url_host,
         "db_probe": db_probe,
         "python_version": sys.version,
+        "event_loop": loop_type,
+        "uvloop": uvloop_info,
     }
 
 
