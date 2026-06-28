@@ -310,6 +310,31 @@ async def diag():
         except Exception as _te:
             raw_thread_probe = f"{type(_te).__name__}: {_te}"
 
+    # psycopg3 internals probe: read source + call conninfo_attempts directly
+    psycopg3_internals: dict = {}
+    if os.environ.get("VERCEL") and db_url_raw:
+        try:
+            import psycopg._conninfo_attempts as _cca_mod
+            import inspect as _insp
+            psycopg3_internals["source"] = _insp.getsource(_cca_mod)[:3000]
+        except Exception as _e:
+            psycopg3_internals["source_err"] = str(_e)
+        try:
+            from psycopg._conninfo_attempts import conninfo_attempts as _ca
+            from urllib.parse import urlparse as _up3
+            _pu3 = _up3(db_url_raw)
+            _ca_params = {
+                "host": _pu3.hostname or "",
+                "port": str(_pu3.port or 6543),
+                "dbname": (_pu3.path or "/postgres").lstrip("/"),
+                "user": _pu3.username or "",
+                "sslmode": "disable",
+            }
+            _attempts = _ca(_ca_params)
+            psycopg3_internals["attempts_ok"] = f"{len(_attempts)} attempt(s)"
+        except Exception as _e:
+            psycopg3_internals["attempts_err"] = f"{type(_e).__name__}: {_e}"
+
     # Live DB probe — uses get_db_context() which routes through sync psycopg3
     # on Vercel (libpq, not asyncio/uvloop → no EBUSY) or asyncpg locally.
     db_probe = "skipped"
@@ -369,6 +394,7 @@ async def diag():
         "tcp_probe": tcp_probe,
         "raw_socket_probe": raw_socket_probe,
         "raw_thread_probe": raw_thread_probe,
+        "psycopg3_internals": psycopg3_internals,
         "db_probe": db_probe,
         "python_version": sys.version,
         "event_loop": loop_type,
