@@ -28,19 +28,27 @@ def _build_connect_args(url: str) -> dict:
     """
     Return asyncpg connect_args appropriate for the target database.
 
-    Supabase, Neon, and other cloud PostgreSQL providers require SSL.
-    asyncpg ignores psycopg2-style `sslmode=require` query params.
+    Cloud PostgreSQL providers (Supabase, Neon, Render) require SSL.
+    asyncpg ignores psycopg2-style `sslmode=require` URL params — the
+    only valid approach is connect_args={"ssl": "require"}.
 
-    IMPORTANT: pass ssl="require" (string) NOT ssl.create_default_context().
-    A shared SSLContext object causes [Errno 16] EBUSY in uvloop when two
-    coroutines concurrently try to establish SSL connections — uvloop's
-    create_connection races on the shared SSLContext's session cache.
-    With ssl="require", asyncpg creates an isolated SSLContext per connection.
+    pgBouncer Transaction Pooler (Supabase port 6543): asyncpg caches
+    prepared statements per server connection.  pgBouncer multiplexes
+    client connections across different server connections, so a prepared
+    statement prepared on connection A may not exist on connection B.
+    statement_cache_size=0 disables the cache and is required when
+    connecting through any pgBouncer Transaction/Statement pooler.
     """
     cloud_hosts = ("supabase.com", "neon.tech", "neon.database.azure.com", "render.com")
+    args: dict = {}
     if any(h in url for h in cloud_hosts):
-        return {"ssl": "require"}
-    return {}
+        args["ssl"] = "require"
+        # pgBouncer (Supabase Transaction/Session Pooler): disable prepared
+        # statement cache so asyncpg doesn't assume a statement prepared on
+        # one server connection exists on a different server connection.
+        if "pooler.supabase.com" in url or ":6543" in url:
+            args["statement_cache_size"] = 0
+    return args
 
 
 def _clean_url(url: str) -> str:
@@ -61,19 +69,15 @@ def get_engine():
         url = _clean_url(settings.database_url)
         connect_args = _build_connect_args(url)
         if os.environ.get("VERCEL"):
-            # On Vercel serverless use a tiny pool (size=1, no overflow).
-            # NullPool destroys + recreates connections per-request; in uvloop
-            # the uv_tcp handle's close callback fires asynchronously, so a new
-            # connect() on the "disposed" handle returns UV_EBUSY / [Errno 16].
-            # A pool of 1 keeps one live connection per function instance,
-            # eliminating the create/destroy cycle and the EBUSY race entirely.
+            # Supabase Transaction Pooler (port 6543) is pgBouncer — it handles
+            # connection pooling server-side.  Use NullPool on our side so each
+            # serverless invocation gets a fresh connection through pgBouncer
+            # rather than maintaining a persistent pool that conflicts with
+            # pgBouncer's own connection management.
+            from sqlalchemy.pool import NullPool
             _engine = create_async_engine(
                 url,
-                pool_size=1,
-                max_overflow=0,
-                pool_pre_ping=True,
-                pool_timeout=20,
-                pool_recycle=300,
+                poolclass=NullPool,
                 connect_args=connect_args,
                 echo=False,
             )
