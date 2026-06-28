@@ -60,13 +60,20 @@ def get_engine():
             )
         url = _clean_url(settings.database_url)
         connect_args = _build_connect_args(url)
-        # Use NullPool on Vercel serverless — each invocation is isolated,
-        # so persistent connection pools waste resources and exhaust DB connections.
         if os.environ.get("VERCEL"):
-            from sqlalchemy.pool import NullPool
+            # On Vercel serverless use a tiny pool (size=1, no overflow).
+            # NullPool destroys + recreates connections per-request; in uvloop
+            # the uv_tcp handle's close callback fires asynchronously, so a new
+            # connect() on the "disposed" handle returns UV_EBUSY / [Errno 16].
+            # A pool of 1 keeps one live connection per function instance,
+            # eliminating the create/destroy cycle and the EBUSY race entirely.
             _engine = create_async_engine(
                 url,
-                poolclass=NullPool,
+                pool_size=1,
+                max_overflow=0,
+                pool_pre_ping=True,
+                pool_timeout=20,
+                pool_recycle=300,
                 connect_args=connect_args,
                 echo=False,
             )
