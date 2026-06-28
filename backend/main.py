@@ -546,6 +546,9 @@ async def diag_psycopg3():
 
     results["user_from_url"] = str(_user)
     results["host_from_url"] = str(_host)
+    # Count total @ signs in the raw URL (excluding scheme://)
+    _url_without_scheme = db_url_raw.split("://", 1)[1] if "://" in db_url_raw else db_url_raw
+    _at_count = _url_without_scheme.count("@")
     # Password diagnostics (never expose value — only metadata)
     from urllib.parse import unquote as _unquote
     _pw_raw = _pu.password or ""
@@ -556,6 +559,13 @@ async def diag_psycopg3():
         "raw_has_at": "@" in _pw_raw,
         "decoded_has_at": "@" in _pw_decoded,
         "raw_has_percent": "%" in _pw_raw,
+        "at_signs_in_netloc": _at_count,
+        "fix_needed": _at_count > 1,
+        "fix_instruction": (
+            "DATABASE_URL password contains unescaped '@'. "
+            "Percent-encode the password: replace each '@' in the password with '%40', "
+            "or get a fresh URL from Supabase → Settings → Database → Transaction Pooler."
+        ) if _at_count > 1 else "URL looks well-formed",
     }
     return results
 
