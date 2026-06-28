@@ -4,7 +4,7 @@ main.py - FastAPI application entry point.
 Startup sequence:
 1. Configure structured logging (loguru)
 2. Warm up singletons (VectorStoreManager, RAGPipeline, RagasRunner)
-3. Verify DB connectivity (non-fatal - app starts even if DB is unavailable)
+3. Verify DB connectivity (non-fatal — app starts even if DB is unavailable)
 4. Log configuration summary
 
 The app starts successfully even when environment variables are missing.
@@ -12,162 +12,165 @@ Features degrade gracefully: endpoints that require unconfigured services
 return HTTP 503 with a clear message rather than crashing the process.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import traceback
 from contextlib import asynccontextmanager
 
-_STARTUP_ERROR: str | None = None
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+
+# ── Boot-error capture ────────────────────────────────────────────────────────
+# Import the settings/db layer here so any ValidationError is visible before
+# the first request arrives. Failures are stored and surfaced via /diag.
+_BOOT_ERROR: str | None = None
+_settings = None
 
 try:
-    from fastapi import FastAPI
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.middleware.gzip import GZipMiddleware
     from loguru import logger
     from sqlalchemy import text
-
     from backend.config import get_settings
     from backend.database import get_db_context, get_engine
-
-    settings = get_settings()
-    _IMPORTS_OK = True
+    _settings = get_settings()
 except Exception:
-    _STARTUP_ERROR = traceback.format_exc()
-    _IMPORTS_OK = False
-    settings = None  # type: ignore[assignment]
+    _BOOT_ERROR = traceback.format_exc()
 
-# Vercel sets VERCEL=1 in its serverless runtime environment
+# Vercel sets VERCEL=1 in the serverless runtime
 _IS_VERCEL = bool(os.environ.get("VERCEL"))
 
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+
 def configure_logging() -> None:
-    """Configure loguru for JSON output in production, colored output in dev."""
-    logger.remove()
-
-    if settings.is_production:
-        logger.add(
-            sys.stdout,
-            format="{time:ISO8601} | {level} | {name}:{line} | {message}",
-            level=settings.log_level,
-            serialize=True,
-        )
-    else:
-        logger.add(
-            sys.stdout,
-            format=(
-                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-                "<level>{level: <8}</level> | "
-                "<cyan>{name}</cyan>:<cyan>{line}</cyan> | "
-                "<level>{message}</level>"
-            ),
-            level=settings.log_level,
-            colorize=True,
-        )
-
-    # File logging: skip on Vercel (read-only FS); use /tmp on any other Linux env
-    if not _IS_VERCEL:
-        log_dir = "logs"
-        try:
-            os.makedirs(log_dir, exist_ok=True)
+    if _settings is None:
+        return
+    try:
+        logger.remove()
+        if _settings.is_production:
             logger.add(
-                f"{log_dir}/verirag.log",
-                rotation="100 MB",
-                retention="30 days",
-                compression="gz",
-                level="INFO",
-                enqueue=True,
+                sys.stdout,
+                format="{time:ISO8601} | {level} | {name}:{line} | {message}",
+                level=_settings.log_level,
+                serialize=True,
             )
-        except Exception as e:
-            logger.warning(f"Could not create log file: {e}")
+        else:
+            logger.add(
+                sys.stdout,
+                format=(
+                    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                    "<level>{level: <8}</level> | "
+                    "<cyan>{name}</cyan>:<cyan>{line}</cyan> | "
+                    "<level>{message}</level>"
+                ),
+                level=_settings.log_level,
+                colorize=True,
+            )
+        if not _IS_VERCEL:
+            log_dir = "logs"
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                logger.add(
+                    f"{log_dir}/verirag.log",
+                    rotation="100 MB",
+                    retention="30 days",
+                    compression="gz",
+                    level="INFO",
+                    enqueue=True,
+                )
+            except Exception as e:
+                logger.warning(f"Could not create log file: {e}")
+    except Exception:
+        pass
 
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # ── Startup ────────────────────────────────────────────────────────────────
+async def lifespan(application: FastAPI):
     configure_logging()
 
-    logger.info("=" * 60)
-    logger.info(f"VeriRAG starting | env={settings.app_env} | vercel={_IS_VERCEL}")
+    if _BOOT_ERROR:
+        try:
+            logger.error(f"Boot error captured:\n{_BOOT_ERROR}")
+        except Exception:
+            print(f"BOOT ERROR: {_BOOT_ERROR}", file=sys.stderr)
+        yield
+        return
 
-    if not settings.groq_api_key:
-        logger.warning("GROQ_API_KEY not set - LLM and evaluation features will be unavailable")
-    if not settings.database_url:
-        logger.warning("DATABASE_URL not set - database features will be unavailable")
-    if not settings.hf_token:
-        logger.warning("HF_TOKEN not set - embedding API calls will use anonymous rate limits")
-
-    # Warm up singletons - failures are logged but do not prevent startup
-    from backend.rag.vectorstore import get_vector_store
-    from backend.rag.pipeline import get_pipeline
-    from backend.evaluator.ragas_runner import get_ragas_runner
-
+    s = _settings
     try:
+        logger.info("=" * 60)
+        logger.info(f"VeriRAG starting | env={s.app_env} | vercel={_IS_VERCEL}")
+
+        if not s.groq_api_key:
+            logger.warning("GROQ_API_KEY not set — LLM/eval features unavailable")
+        if not s.database_url:
+            logger.warning("DATABASE_URL not set — database features unavailable")
+        if not s.hf_token:
+            logger.warning("HF_TOKEN not set — embeddings use anonymous rate limits")
+    except Exception:
+        pass
+
+    # Warm up singletons — failures are non-fatal
+    try:
+        from backend.rag.vectorstore import get_vector_store
         get_vector_store()
         logger.info("VectorStore initialized")
     except Exception as e:
-        logger.error(f"VectorStore init failed: {e}")
+        logger.error(f"VectorStore init failed (non-fatal): {e}")
 
     try:
+        from backend.rag.pipeline import get_pipeline
         get_pipeline()
         logger.info("RAG pipeline initialized")
     except Exception as e:
-        logger.error(f"RAG pipeline init failed: {e}")
+        logger.error(f"RAG pipeline init failed (non-fatal): {e}")
 
     try:
+        from backend.evaluator.ragas_runner import get_ragas_runner
         get_ragas_runner()
         logger.info("RAGAS runner initialized")
     except Exception as e:
-        logger.error(f"RAGAS runner init failed: {e}")
+        logger.error(f"RAGAS runner init failed (non-fatal): {e}")
 
     # Verify DB connectivity (non-fatal)
-    if settings.database_url:
+    if s.database_url:
         try:
             async with get_db_context() as db:
                 await db.execute(text("SELECT 1"))
             logger.info("PostgreSQL connected")
         except Exception as e:
-            logger.error(f"Database connection failed: {e}")
+            logger.error(f"Database connection failed (non-fatal): {e}")
     else:
-        logger.info("Skipping DB check - DATABASE_URL not configured")
+        logger.info("Skipping DB check — DATABASE_URL not configured")
 
-    logger.info("VeriRAG startup complete")
-    logger.info("=" * 60)
-
-    yield  # ── Application runs ──────────────────────────────────────────────
-
-    # ── Shutdown ───────────────────────────────────────────────────────────────
-    logger.info("VeriRAG shutting down...")
     try:
-        e = get_engine()
-        await e.dispose()
-        logger.info("Database connection pool disposed")
+        logger.info("VeriRAG startup complete")
+        logger.info("=" * 60)
     except Exception:
         pass
-    logger.info("Shutdown complete.")
+
+    yield
+
+    # Shutdown
+    try:
+        logger.info("VeriRAG shutting down...")
+        e = get_engine()
+        await e.dispose()
+        logger.info("Database pool disposed")
+    except Exception:
+        pass
 
 
-# ── FastAPI Application ────────────────────────────────────────────────────────
+# ── Application (must be module-level for @vercel/python static analysis) ─────
 
-if not _IMPORTS_OK:
-    # Surface the real boot error as a JSON response so Vercel logs capture it
-    from fastapi import FastAPI as _FastAPI
-
-    app = _FastAPI(title="VeriRAG [BOOT ERROR]")
-
-    @app.get("/{path:path}", include_in_schema=False)
-    async def _boot_error(path: str):
-        return {"boot_error": _STARTUP_ERROR, "env_vars": {
-            k: ("set" if v else "empty")
-            for k, v in os.environ.items()
-            if k in ("DATABASE_URL", "GROQ_API_KEY", "HF_TOKEN", "LANGCHAIN_TRACING_V2",
-                     "CHROMA_PERSIST_DIR", "APP_ENV", "VERCEL", "VERCEL_ENV")
-        }}
-
-else:
-    app = FastAPI(
-        title="VeriRAG",
-        description="""
-## VeriRAG - Production RAG Evaluation & Observability Platform
+app = FastAPI(
+    title="VeriRAG",
+    description="""
+## VeriRAG — Production RAG Evaluation & Observability Platform
 
 VeriRAG evaluates RAG pipeline quality using [RAGAS](https://docs.ragas.io) metrics:
 
@@ -179,73 +182,119 @@ VeriRAG evaluates RAG pipeline quality using [RAGAS](https://docs.ragas.io) metr
 | **Context Recall** | Does retrieved context cover all ground truth information? |
 
 ### Quick Start
-1. `POST /api/v1/pipeline/ingest` - upload your documents
-2. `POST /api/v1/eval/run/sample` - run built-in sample evaluation
-3. `GET /api/v1/eval/runs/{id}` - retrieve RAGAS scores
+1. `POST /api/v1/pipeline/ingest` — upload your documents
+2. `POST /api/v1/eval/run/sample` — run a built-in sample evaluation
+3. `GET /api/v1/eval/runs/{id}` — retrieve RAGAS scores
 
-### Setup
-Set these environment variables in your deployment:
-- `GROQ_API_KEY` - Groq API key (get free at console.groq.com)
-- `DATABASE_URL` - PostgreSQL connection string (postgresql+asyncpg://...)
-- `HF_TOKEN` - HuggingFace token for embedding API
+### Required Environment Variables
+- `GROQ_API_KEY` — Groq API key (free at console.groq.com)
+- `DATABASE_URL` — PostgreSQL connection string (postgresql+asyncpg://...)
+- `HF_TOKEN` — HuggingFace token for embedding API
     """,
-        version="1.0.0",
-        lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
-    )
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+)
 
-    # ── Middleware ─────────────────────────────────────────────────────────────────
+# ── Middleware ─────────────────────────────────────────────────────────────────
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.allowed_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+_cors_origins = ["*"]
+if _settings is not None:
+    try:
+        _cors_origins = _settings.allowed_origins
+    except Exception:
+        pass
 
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-    # ── Routers ───────────────────────────────────────────────────────────────────
+# ── Routers (lazy import to avoid top-level import failures) ──────────────────
 
+try:
     from backend.routers import health, eval, pipeline  # noqa: E402
-
+    _api_prefix = _settings.api_v1_prefix if _settings else "/api/v1"
     app.include_router(health.router)
-    app.include_router(eval.router, prefix=settings.api_v1_prefix)
-    app.include_router(pipeline.router, prefix=settings.api_v1_prefix)
+    app.include_router(eval.router, prefix=_api_prefix)
+    app.include_router(pipeline.router, prefix=_api_prefix)
+except Exception as _router_err:
+    _boot_router_error = traceback.format_exc()
+    if _BOOT_ERROR is None:
+        globals()['_BOOT_ERROR'] = _boot_router_error
 
-    # ── System Status ──────────────────────────────────────────────────────────────
 
-    @app.get("/api/v1/system/status", include_in_schema=False)
-    async def system_status():
-        """Returns configuration status - used by frontend to show setup guide."""
-        missing = []
-        if not settings.groq_api_key:
-            missing.append("GROQ_API_KEY")
-        if not settings.database_url:
-            missing.append("DATABASE_URL")
-        if not settings.hf_token:
-            missing.append("HF_TOKEN")
+# ── Diagnostic endpoint (always available — exposes boot errors) ──────────────
 
+@app.get("/diag", include_in_schema=False)
+async def diag():
+    """Diagnostic endpoint: exposes boot/import errors for debugging."""
+    env_snapshot = {
+        k: ("set" if v else "empty")
+        for k, v in os.environ.items()
+        if k in (
+            "DATABASE_URL", "GROQ_API_KEY", "HF_TOKEN",
+            "LANGCHAIN_TRACING_V2", "CHROMA_PERSIST_DIR",
+            "APP_ENV", "VERCEL", "VERCEL_ENV", "LANGCHAIN_API_KEY",
+        )
+    }
+    return {
+        "boot_ok": _BOOT_ERROR is None,
+        "boot_error": _BOOT_ERROR,
+        "env": env_snapshot,
+        "python_version": sys.version,
+    }
+
+
+# ── System Status ─────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/system/status", include_in_schema=False)
+async def system_status():
+    """Configuration status — used by frontend to show setup guide."""
+    if _BOOT_ERROR:
         return {
-            "configured": len(missing) == 0,
-            "missing_vars": missing,
-            "environment": settings.app_env,
+            "configured": False,
+            "missing_vars": ["BOOT_ERROR"],
+            "environment": os.environ.get("APP_ENV", "unknown"),
             "version": "1.0.0",
-            "setup_guide": "https://github.com/OmNarkar777/Verirag#deployment" if missing else None,
+            "boot_error": _BOOT_ERROR[:500],
         }
 
-    # ── Root ──────────────────────────────────────────────────────────────────────
+    s = _settings
+    missing = []
+    if not s.groq_api_key:
+        missing.append("GROQ_API_KEY")
+    if not s.database_url:
+        missing.append("DATABASE_URL")
+    if not s.hf_token:
+        missing.append("HF_TOKEN")
 
-    @app.get("/", include_in_schema=False)
-    async def root():
-        return {
-            "service": "VeriRAG",
-            "version": "1.0.0",
-            "docs": "/docs",
-            "health": "/health",
-            "api": settings.api_v1_prefix,
-            "status": "/api/v1/system/status",
-        }
+    return {
+        "configured": len(missing) == 0,
+        "missing_vars": missing,
+        "environment": s.app_env,
+        "version": "1.0.0",
+        "setup_guide": "https://github.com/OmNarkar777/Verirag#deployment" if missing else None,
+    }
+
+
+# ── Root ──────────────────────────────────────────────────────────────────────
+
+@app.get("/", include_in_schema=False)
+async def root():
+    prefix = _settings.api_v1_prefix if _settings else "/api/v1"
+    return {
+        "service": "VeriRAG",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health",
+        "api": prefix,
+        "status": "/api/v1/system/status",
+        "diag": "/diag",
+    }
