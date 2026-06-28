@@ -161,18 +161,26 @@ def _run_data(seed_state: dict) -> list[dict]:
 
         f, r, p, c = _make_scores(*base_scores)
 
-        regression_details = {}
+        regression_details: dict = {}
         has_regression = False
-        if is_regression and pipe_idx in prev_scores:
+        threshold = 0.10
+        if pipe_idx in prev_scores:
             pf, pr, pp, pc = prev_scores[pipe_idx]
-            drops = {}
-            if pf - f > 0.08: drops["faithfulness"] = {"prev": round(pf, 3), "curr": round(f, 3), "drop": round(pf - f, 3)}
-            if pr - r > 0.08: drops["answer_relevancy"] = {"prev": round(pr, 3), "curr": round(r, 3), "drop": round(pr - r, 3)}
-            if pp - p > 0.08: drops["context_precision"] = {"prev": round(pp, 3), "curr": round(p, 3), "drop": round(pp - p, 3)}
-            if pc - c > 0.08: drops["context_recall"] = {"prev": round(pc, 3), "curr": round(c, 3), "drop": round(pc - c, 3)}
-            if drops:
-                has_regression = True
-                regression_details = {"metrics": drops, "threshold": 0.08}
+            for metric_name, (curr_val, prev_val) in [
+                ("faithfulness", (f, pf)),
+                ("answer_relevancy", (r, pr)),
+                ("context_precision", (p, pp)),
+                ("context_recall", (c, pc)),
+            ]:
+                delta = curr_val - prev_val
+                regression_details[metric_name] = {
+                    "previous": round(prev_val, 4),
+                    "current": round(curr_val, 4),
+                    "delta": round(delta, 4),
+                    "threshold": threshold,
+                    "is_regression": is_regression and delta <= -threshold,
+                }
+            has_regression = any(v["is_regression"] for v in regression_details.values())
 
         prev_scores[pipe_idx] = (f, r, p, c)
 
