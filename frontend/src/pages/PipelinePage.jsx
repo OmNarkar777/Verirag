@@ -17,7 +17,7 @@ export default function PipelinePage() {
   const startSample = useStartSampleEval({
     onSuccess: (data) => setSampleNotice({
       type: 'success',
-      msg: `Evaluation started (${data?.eval_run_id?.slice(0, 8) ?? '…'}). Dashboard will update when complete.`,
+      msg: `Evaluation complete (run ${data?.eval_run_id?.slice(0, 8) ?? '…'}). Dashboard has been updated with new scores.`,
     }),
     onError: (err) => setSampleNotice({
       type: 'error',
