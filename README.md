@@ -3,7 +3,7 @@
 # VeriRAG
 ### Production RAG Evaluation & Observability Platform
 
-[![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-green?logo=fastapi)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](https://react.dev)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue?logo=postgresql)](https://postgresql.org)
@@ -31,7 +31,7 @@ VeriRAG answers this automatically. Every eval run is compared against the previ
 │                                                                      │
 │  ┌─────────────────────────┐    ┌─────────────────────────────────┐  │
 │  │   React Frontend        │    │   FastAPI Backend               │  │
-│  │   (Vite + Tailwind)     │◄──►│   (async, Python 3.11)         │  │
+│  │   (Vite + Tailwind)     │◄──►│   (async, Python 3.12)         │  │
 │  │                         │    │                                 │  │
 │  │  Dashboard              │    │  POST /eval/run ──► EvalService │  │
 │  │  ├─ MetricCards         │    │       │              │          │  │
@@ -127,7 +127,7 @@ The dashboard shows a red banner immediately. Stored as JSONB in PostgreSQL with
 
 ### Prerequisites
 - Docker + Docker Compose
-- Python 3.11
+- Python 3.12
 - Node.js 20+
 - [Groq API key](https://console.groq.com) — free tier
 
@@ -213,6 +213,8 @@ Full interactive docs: `http://localhost:8000/docs`
 
 **Schema Evolution** — Two Alembic migrations with explicit PostgreSQL types (JSONB, ARRAY). `alembic downgrade -1` rolls back. Migration files are version-controlled diffs, not `create_all()`.
 
+**Zero-Touch Deploy** — `alembic upgrade head` runs automatically in the FastAPI lifespan on every cold start. New schema changes land the instant a deployment goes live; no manual migration step.
+
 ---
 
 ## Project Structure
@@ -246,6 +248,33 @@ verirag/
     ├── test_eval.py
     └── test_pipeline.py
 ```
+
+---
+
+## Deployment
+
+### Vercel + Supabase (Production)
+
+**1. Create a Supabase project** at [supabase.com](https://supabase.com) (free tier). Copy the **Transaction Pooler** URI from Settings → Database → URI.
+
+**2. Deploy to Vercel:**
+```bash
+npx vercel --prod
+```
+
+**3. Set environment variables** in Vercel Dashboard → Project → Environment Variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | ✅ | `postgresql+asyncpg://postgres.XXXX:PASS@aws-0-REGION.pooler.supabase.com:6543/postgres` |
+| `GROQ_API_KEY` | ✅ | Free at [console.groq.com](https://console.groq.com) |
+| `HF_TOKEN` | Optional | [HuggingFace token](https://huggingface.co/settings/tokens) — faster embedding rate limits |
+| `LANGCHAIN_API_KEY` | Optional | For LangSmith tracing |
+| `LANGCHAIN_TRACING_V2` | Optional | `true` to enable tracing |
+
+**4.** Alembic migrations run automatically on first cold start — no manual migration step.
+
+**Note on ChromaDB:** Vercel serverless doesn't include the OpenMP runtime (`libgomp.so.1`) required by ChromaDB's HNSW index. The `/health` endpoint reports `chromadb: unavailable` on Vercel — all other features (evaluations, API docs, regression detection) work normally. Use the Docker Compose setup for full RAG pipeline functionality.
 
 ---
 
