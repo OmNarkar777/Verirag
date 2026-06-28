@@ -273,8 +273,24 @@ async def diag():
     except Exception:
         db_url_host = "parse error"
 
-    # Raw TCP connectivity test — no asyncpg, no SSL, no SQLAlchemy.
-    # Tells us if Vercel can reach the Supabase host at all.
+    # Live DB probe runs FIRST — before TCP probe — to avoid uvloop handle
+    # reuse: asyncio.open_connection() and asyncpg both use loop.create_connection();
+    # running TCP probe first leaves a closing libuv handle that asyncpg
+    # may pick up → UV_EBUSY ([Errno 16]).
+    db_probe = "skipped"
+    if db_url_raw and _settings:
+        try:
+            from backend.database import get_engine
+            from sqlalchemy import text
+            engine = get_engine()
+            async with engine.connect() as conn:
+                result = await conn.execute(text("SELECT version()"))
+                db_probe = result.scalar()
+        except Exception as probe_exc:
+            db_probe = traceback.format_exc()
+
+    # TCP probe runs AFTER DB probe — proves network reachability without
+    # poisoning asyncpg's libuv handle pool.
     tcp_probe = "skipped"
     if db_url_raw:
         try:
@@ -298,19 +314,6 @@ async def diag():
             tcp_probe = f"TCP REFUSED — host reachable but port blocked: {e}"
         except Exception as e:
             tcp_probe = f"TCP {type(e).__name__}: {e}"
-
-    # Live DB probe — full traceback on failure
-    db_probe = "skipped"
-    if db_url_raw and _settings:
-        try:
-            from backend.database import get_engine
-            from sqlalchemy import text
-            engine = get_engine()
-            async with engine.connect() as conn:
-                result = await conn.execute(text("SELECT version()"))
-                db_probe = result.scalar()
-        except Exception as probe_exc:
-            db_probe = traceback.format_exc()
 
     # Report active event loop type to detect if uvloop is being used
     import asyncio as _asyncio

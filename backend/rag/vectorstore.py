@@ -21,8 +21,15 @@ import hashlib
 import uuid
 from pathlib import Path
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+try:
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+    _CHROMADB_AVAILABLE = True
+except ImportError:
+    chromadb = None  # type: ignore[assignment]
+    ChromaSettings = None  # type: ignore[assignment]
+    _CHROMADB_AVAILABLE = False
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from huggingface_hub import InferenceClient
@@ -45,6 +52,12 @@ class VectorStoreManager:
     """
 
     def __init__(self):
+        if not _CHROMADB_AVAILABLE:
+            raise RuntimeError(
+                "chromadb is not installed. "
+                "On Vercel, the vector store is unavailable (libgomp.so.1 missing). "
+                "For local development: pip install chromadb==0.5.0"
+            )
         # PersistentClient: data survives process restarts
         # EphemeralClient: in-memory only (good for testing)
         self._client = chromadb.PersistentClient(
