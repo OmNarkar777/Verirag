@@ -2,7 +2,6 @@
 import asyncio
 import os
 import re
-import ssl as _ssl
 from logging.config import fileConfig
 
 from alembic import context
@@ -34,8 +33,7 @@ def get_url() -> str:
 
 def get_connect_args(url: str) -> dict:
     if any(h in url for h in _CLOUD_HOSTS):
-        ctx = _ssl.create_default_context()
-        return {"ssl": ctx}
+        return {"ssl": "require"}
     return {}
 
 

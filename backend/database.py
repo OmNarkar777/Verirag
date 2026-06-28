@@ -28,17 +28,18 @@ def _build_connect_args(url: str) -> dict:
     """
     Return asyncpg connect_args appropriate for the target database.
 
-    Supabase and Neon require SSL. asyncpg ignores psycopg2-style
-    `sslmode=require` query params — the only way to enable SSL with
-    asyncpg is via connect_args={'ssl': <SSLContext>} or ssl=True.
-    We detect cloud-hosted providers by hostname and force SSL on.
+    Supabase, Neon, and other cloud PostgreSQL providers require SSL.
+    asyncpg ignores psycopg2-style `sslmode=require` query params.
+
+    IMPORTANT: pass ssl="require" (string) NOT ssl.create_default_context().
+    A shared SSLContext object causes [Errno 16] EBUSY in uvloop when two
+    coroutines concurrently try to establish SSL connections — uvloop's
+    create_connection races on the shared SSLContext's session cache.
+    With ssl="require", asyncpg creates an isolated SSLContext per connection.
     """
     cloud_hosts = ("supabase.com", "neon.tech", "neon.database.azure.com", "render.com")
     if any(h in url for h in cloud_hosts):
-        import ssl as _ssl
-        ctx = _ssl.create_default_context()
-        return {"ssl": ctx}
-    # Strip any stray sslmode= that asyncpg would choke on
+        return {"ssl": "require"}
     return {}
 
 
