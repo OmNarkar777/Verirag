@@ -234,8 +234,8 @@ def seed_eval_data_sync() -> None:
 
     with Session() as sess:
         count = sess.execute(select(func.count(EvalRun.id))).scalar_one()
-        if count > 0:
-            logger.info(f"Eval seed skipped — {count} runs already exist")
+        if count >= 25:
+            logger.info(f"Eval seed skipped — {count} runs already exist (sufficient data)")
             return
 
     logger.info("Seeding eval data (30+ runs with realistic scores)...")
