@@ -521,14 +521,16 @@ async def diag_psycopg3():
 
     # Test 3: SQLAlchemy sync engine connect args (what SA passes to psycopg3)
     try:
-        from backend.database import _get_sync_engine as _gse
         import re as _re
-        eng = _gse()
-        cargs, cparams = eng.dialect.create_connect_args(eng.url)
-        safe = {k: ("***" if k in ("password",) else v) for k, v in cparams.items()}
-        if "conninfo" in cparams:
-            safe["conninfo"] = _re.sub(r"password=[^\s]+", "password=***", cparams["conninfo"])
-        results["sa_connect_args"] = {"positional": cargs, "kwargs": safe}
+        from backend.database import _get_sync_engine as _gse
+        _eng = _gse()
+        _cargs, _cparams = _eng.dialect.create_connect_args(_eng.url)
+        # Force all values to str to avoid JSON serialization failures
+        _safe = {
+            k: "***" if k == "password" else _re.sub(r"password=[^\s]+", "password=***", str(v))
+            for k, v in _cparams.items()
+        }
+        results["sa_connect_args"] = {"positional": str(_cargs), "kwargs": _safe}
     except Exception as ex:
         results["sa_connect_args"] = f"{type(ex).__name__}: {ex}"
 
@@ -537,12 +539,12 @@ async def diag_psycopg3():
         from backend.database import get_db_context as _gdc
         from sqlalchemy import text as _t
         async with _gdc() as db:
-            row = await db.execute(_t("SELECT current_user || '@' || version()"))
-            results["sa_vercel_session"] = row.scalar()
+            _row = await db.execute(_t("SELECT current_user"))
+            results["sa_vercel_session"] = str(_row.scalar())
     except Exception as ex:
         results["sa_vercel_session"] = f"{type(ex).__name__}: {traceback.format_exc()[-600:]}"
 
-    results["user_from_url"] = _user
+    results["user_from_url"] = str(_user)
     return results
 
 
