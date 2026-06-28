@@ -14,3 +14,8 @@ frontend/dist/
 Thumbs.db
 verirag_fix.ps1
 polish.ps1
+
+.vercel
+.env*.local
+.env.production
+.env.local
