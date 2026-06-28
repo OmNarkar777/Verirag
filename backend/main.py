@@ -277,6 +277,39 @@ async def diag():
     except Exception:
         db_url_host = "parse error"
 
+    # Raw socket probe — blocking socket.connect() from THIS event-loop coroutine
+    # (not a thread). If this returns EBUSY too, the sandbox itself blocks TCP.
+    raw_socket_probe = "skipped"
+    if db_url_raw:
+        try:
+            from urllib.parse import urlparse as _up2
+            _p2 = _up2(db_url_raw)
+            _h2, _pt2 = _p2.hostname, _p2.port or 5432
+            import socket as _sock_mod
+            _raw = _sock_mod.socket(_sock_mod.AF_INET, _sock_mod.SOCK_STREAM)
+            _raw.settimeout(10)
+            _raw.connect((_h2, _pt2))
+            _raw.close()
+            raw_socket_probe = f"socket.connect({_h2}:{_pt2}) → OK"
+        except Exception as _se:
+            raw_socket_probe = f"socket.connect({_h2}:{_pt2}) → {type(_se).__name__}: {_se}"
+
+    # Raw socket probe from a thread — isolates thread-based connect issues
+    raw_thread_probe = "skipped"
+    if db_url_raw:
+        try:
+            import asyncio as _aio2
+            def _thread_sock():
+                import socket as _sm
+                _s = _sm.socket(_sm.AF_INET, _sm.SOCK_STREAM)
+                _s.settimeout(10)
+                _s.connect((_h2, _pt2))
+                _s.close()
+                return "OK"
+            raw_thread_probe = await _aio2.to_thread(_thread_sock)
+        except Exception as _te:
+            raw_thread_probe = f"{type(_te).__name__}: {_te}"
+
     # Live DB probe — uses get_db_context() which routes through sync psycopg3
     # on Vercel (libpq, not asyncio/uvloop → no EBUSY) or asyncpg locally.
     db_probe = "skipped"
@@ -334,6 +367,8 @@ async def diag():
         "env": env_snapshot,
         "db_url_host": db_url_host,
         "tcp_probe": tcp_probe,
+        "raw_socket_probe": raw_socket_probe,
+        "raw_thread_probe": raw_thread_probe,
         "db_probe": db_probe,
         "python_version": sys.version,
         "event_loop": loop_type,
