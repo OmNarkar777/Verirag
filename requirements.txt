@@ -24,7 +24,11 @@ langsmith==0.1.147
 
 huggingface_hub==0.23.2
 
-chromadb==0.5.0
+# chromadb is intentionally excluded from production (Vercel).
+# Reasons: (1) requires libgomp.so.1 (not on Lambda), (2) onnxruntime
+# transitive dep is ~200 MB pushing bundle over Vercel's 500 MB limit.
+# All vectorstore/pipeline code gracefully degrades when chromadb is absent.
+# For local full-RAG development: pip install chromadb==0.5.0
 
 ragas==0.1.9
 datasets==2.19.1
