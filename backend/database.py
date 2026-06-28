@@ -51,9 +51,29 @@ def _build_connect_args(url: str) -> dict:
     return args
 
 
+def _ensure_asyncpg_scheme(url: str) -> str:
+    """
+    Normalise any postgresql:// variant to postgresql+asyncpg://.
+
+    Supabase and most cloud providers emit plain postgresql:// URIs.
+    SQLAlchemy's create_async_engine falls back to psycopg2 (the sync
+    default) when no driver is specified, raising ModuleNotFoundError
+    if psycopg2 is not installed.  This normaliser converts:
+      postgresql://      → postgresql+asyncpg://
+      postgresql+psycopg2:// → postgresql+asyncpg://
+    so the user can paste the URL from Supabase directly without editing it.
+    """
+    if url.startswith("postgresql://") or url.startswith("postgres://"):
+        url = "postgresql+asyncpg://" + url.split("://", 1)[1]
+    elif url.startswith("postgresql+psycopg2://"):
+        url = "postgresql+asyncpg://" + url.split("://", 1)[1]
+    return url
+
+
 def _clean_url(url: str) -> str:
     """Remove psycopg2-style sslmode param — asyncpg ignores it and may warn."""
     import re
+    url = _ensure_asyncpg_scheme(url)
     return re.sub(r"[?&]sslmode=\w+", "", url)
 
 
