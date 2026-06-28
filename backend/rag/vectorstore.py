@@ -39,6 +39,8 @@ from backend.config import get_settings
 
 settings = get_settings()
 
+_EMBED_DIM = 384
+
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -51,18 +53,70 @@ def _build_text_splitter() -> RecursiveCharacterTextSplitter:
     )
 
 
+def _fallback_embed(texts: list[str], dim: int = _EMBED_DIM) -> list[list[float]]:
+    """
+    Pure-Python TF-IDF hash embedding. No external dependencies.
+
+    Used when HuggingFace Inference API is unavailable (no HF_TOKEN, rate limit,
+    or network error). Provides keyword-based semantic similarity: texts sharing
+    important terms are placed closer in embedding space.
+
+    Sufficient for a demonstration RAG pipeline where the recruiter queries
+    with domain terms that appear in the indexed documents.
+    """
+    import re
+    import math
+    import numpy as np
+
+    def tokenize(text: str) -> list[str]:
+        return re.findall(r'\b[a-z]{2,}\b', text.lower())
+
+    embeddings = []
+    for text in texts:
+        words = tokenize(text)
+        if not words:
+            embeddings.append([0.0] * dim)
+            continue
+        tf: dict[str, int] = {}
+        for w in words:
+            tf[w] = tf.get(w, 0) + 1
+        vec = np.zeros(dim, dtype=np.float64)
+        for word, count in tf.items():
+            idf = 1.0 / (1.0 + math.log1p(count))
+            for seed in range(4):
+                idx = abs(hash(f"{word}_{seed}")) % dim
+                sign = 1 if abs(hash(f"{word}_{seed}_s")) % 2 else -1
+                vec[idx] += sign * count * idf
+        norm = float(np.linalg.norm(vec))
+        if norm > 0:
+            vec = vec / norm
+        embeddings.append(vec.tolist())
+    return embeddings
+
+
 def _embed_texts(hf_client: InferenceClient, texts: list[str]) -> list[list[float]]:
-    """Embed texts via HuggingFace Inference API."""
-    response = hf_client.feature_extraction(
-        text=texts,
-        model=settings.embedding_model,
-    )
-    if hasattr(response, "tolist"):
-        result = response.tolist()
-        if result and not isinstance(result[0], list):
-            return [result]
-        return result
-    return [list(vec) for vec in response]
+    """
+    Embed texts via HuggingFace Inference API.
+    Falls back to _fallback_embed() on auth/rate-limit errors so the app
+    continues functioning without HF_TOKEN in serverless environments.
+    """
+    try:
+        response = hf_client.feature_extraction(
+            text=texts,
+            model=settings.embedding_model,
+        )
+        if hasattr(response, "tolist"):
+            result = response.tolist()
+            if result and not isinstance(result[0], list):
+                return [result]
+            return result
+        return [list(vec) for vec in response]
+    except Exception as e:
+        err = str(e)
+        if any(code in err for code in ("401", "429", "Unauthorized", "Rate limit", "503")):
+            logger.warning(f"HF Inference API unavailable ({err[:60]}); using local fallback embedder")
+            return _fallback_embed(texts)
+        raise
 
 
 # ── PostgreSQL-backed vector store ────────────────────────────────────────────
