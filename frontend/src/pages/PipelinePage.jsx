@@ -17,7 +17,7 @@ export default function PipelinePage() {
   const startSample = useStartSampleEval({
     onSuccess: (data) => setSampleNotice({
       type: 'success',
-      msg: `Evaluation complete (run ${data?.eval_run_id?.slice(0, 8) ?? '…'}). Dashboard has been updated with new scores.`,
+      msg: `RAGAS evaluation complete — run ${data?.eval_run_id?.slice(0, 8) ?? '…'} (${data?.version_tag ?? ''}). Dashboard and chart updated.`,
     }),
     onError: (err) => setSampleNotice({
       type: 'error',
@@ -137,7 +137,7 @@ export default function PipelinePage() {
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
               </svg>
             )}
-            {startSample.isPending ? 'Starting evaluation…' : 'Run Sample Evaluation (10 cases)'}
+            {startSample.isPending ? 'Running RAGAS evaluation… (~30s)' : 'Run Sample Evaluation (3 cases, real RAGAS)'}
           </button>
           <a href="/docs" target="_blank" rel="noreferrer"
             className="text-xs border border-slate-700 hover:border-slate-600 text-slate-400 px-4 py-2 rounded-lg transition-colors">

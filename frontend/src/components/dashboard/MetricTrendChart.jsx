@@ -20,14 +20,19 @@ function SkeletonChart() {
   return <div className="skeleton h-64 w-full rounded-xl" />
 }
 
-// Formats the x-axis tick: "v1.2.0-hybrid-mmr" → "v1.2.0"
-const shortVersion = (v) => v?.split('-')[0] ?? v
+// Formats the x-axis tick: ISO date → "Jun 28" or "06/28 14:30"
+const shortDate = (iso) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
 
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-lg p-3 text-xs shadow-xl">
-      <p className="text-slate-300 font-medium mb-2">{label}</p>
+      <p className="text-slate-300 font-medium mb-1">{payload[0]?.payload?.version ?? label}</p>
+      <p className="text-slate-500 mb-2">{shortDate(label)}</p>
       {payload.map((p) => (
         <div key={p.dataKey} className="flex items-center gap-2 mb-1">
           <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
@@ -44,13 +49,16 @@ const CustomTooltip = ({ active, payload, label }) => {
 export default function MetricTrendChart({ runs = [], loading = false }) {
   if (loading) return <SkeletonChart />
 
-  // Build chart data from completed runs, newest-last for left→right time order
+  // Build chart data: completed runs sorted by created_at (oldest→newest = left→right)
+  // Deduplicate by version prefix so repeated sample evals don't collapse the view,
+  // but keep each distinct run as its own point using created_at as the x key.
   const completed = [...runs]
     .filter((r) => r.status === 'completed' && r.scores)
-    .reverse()
-    .slice(-10) // last 10 completed runs
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    .slice(-20) // last 20 completed runs
     .map((r) => ({
       version: r.version_tag,
+      date: r.created_at,
       faithfulness: r.scores?.faithfulness,
       answer_relevancy: r.scores?.answer_relevancy,
       context_precision: r.scores?.context_precision,
@@ -71,8 +79,8 @@ export default function MetricTrendChart({ runs = [], loading = false }) {
         <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
 
         <XAxis
-          dataKey="version"
-          tickFormatter={shortVersion}
+          dataKey="date"
+          tickFormatter={shortDate}
           tick={{ fill: '#64748b', fontSize: 11 }}
           axisLine={{ stroke: '#1e293b' }}
           tickLine={false}
