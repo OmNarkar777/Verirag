@@ -137,7 +137,11 @@ class RagasRunner:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    return evaluate(dataset=dataset, metrics=metrics)
+                    return evaluate(
+                        dataset=dataset,
+                        metrics=metrics,
+                        raise_exceptions=False,  # return NaN rather than crash on metric failure
+                    )
                 finally:
                     loop.close()
                     asyncio.set_event_loop(None)
