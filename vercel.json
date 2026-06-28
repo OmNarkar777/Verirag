@@ -17,7 +17,7 @@
   ],
   "functions": {
     "backend/main.py": {
-      "maxDuration": 300
+      "maxDuration": 60
     }
   },
   "routes": [
