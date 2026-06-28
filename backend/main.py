@@ -147,12 +147,16 @@ async def lifespan(application: FastAPI):
     # Create tables then verify connectivity (both non-fatal)
     if s.database_url:
         try:
-            from backend.database import Base
-            engine = get_engine()
-            # create_all is idempotent — safe to call on every cold start.
-            # Runs in the SAME event loop (no nested asyncio.run / EBUSY race).
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+            if _IS_VERCEL:
+                # asyncpg EBUSY on Vercel: use sync psycopg3 via to_thread.
+                # create_all_sync() uses libpq (C), no asyncio, no uvloop → works.
+                from backend.database import create_all_sync
+                await asyncio.to_thread(create_all_sync)
+            else:
+                from backend.database import Base
+                engine = get_engine()
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
             logger.info("Database schema ready (create_all applied)")
         except Exception as e:
             logger.error(f"Schema creation failed (non-fatal): {e}")
@@ -273,20 +277,17 @@ async def diag():
     except Exception:
         db_url_host = "parse error"
 
-    # Live DB probe runs FIRST — before TCP probe — to avoid uvloop handle
-    # reuse: asyncio.open_connection() and asyncpg both use loop.create_connection();
-    # running TCP probe first leaves a closing libuv handle that asyncpg
-    # may pick up → UV_EBUSY ([Errno 16]).
+    # Live DB probe — uses get_db_context() which routes through sync psycopg3
+    # on Vercel (libpq, not asyncio/uvloop → no EBUSY) or asyncpg locally.
     db_probe = "skipped"
     if db_url_raw and _settings:
         try:
-            from backend.database import get_engine
-            from sqlalchemy import text
-            engine = get_engine()
-            async with engine.connect() as conn:
-                result = await conn.execute(text("SELECT version()"))
-                db_probe = result.scalar()
-        except Exception as probe_exc:
+            from backend.database import get_db_context as _get_db_ctx
+            from sqlalchemy import text as _sa_text
+            async with _get_db_ctx() as _db:
+                _res = await _db.execute(_sa_text("SELECT version()"))
+                db_probe = _res.scalar()
+        except Exception:
             db_probe = traceback.format_exc()
 
     # TCP probe runs AFTER DB probe — proves network reachability without
