@@ -85,3 +85,22 @@ class PipelineDocument(Base):
     doc_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     __table_args__ = (UniqueConstraint("doc_id", "collection_name", name="uq_doc_collection"),)
+
+
+class DocumentChunk(Base):
+    """
+    PostgreSQL-backed vector store chunk.
+    Used instead of ChromaDB on Vercel (where libgomp.so.1 is unavailable).
+    Embedding stored as JSONB float array; cosine similarity via numpy.
+    """
+    __tablename__ = "document_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    doc_id: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(VARCHAR(500), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    collection_name: Mapped[str] = mapped_column(VARCHAR(200), nullable=False, index=True)
+    chunk_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)

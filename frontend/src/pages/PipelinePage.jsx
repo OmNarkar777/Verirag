@@ -101,7 +101,10 @@ export default function PipelinePage() {
       )}
 
       <div className="glass rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-slate-200 mb-3">Quick Actions</h3>
+        <h3 className="text-sm font-semibold text-slate-200 mb-1">Quick Actions</h3>
+        <p className="text-xs text-slate-500 mb-3">
+          12 AI/ML reference documents are pre-loaded — query them immediately without uploading anything.
+        </p>
         <div className="flex flex-wrap gap-3">
           <button
             onClick={() => startSample.mutate('v0.0.1-quick')}
@@ -114,6 +117,29 @@ export default function PipelinePage() {
             className="text-xs border border-slate-700 hover:border-slate-600 text-slate-400 px-4 py-2 rounded-lg transition-colors">
             API Docs
           </a>
+        </div>
+        <div className="mt-4 pt-4 border-t border-slate-800">
+          <p className="text-xs text-slate-600 mb-2 uppercase tracking-wider font-medium">Pre-loaded documents</p>
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              'Attention Is All You Need',
+              'RAGAS Evaluation Framework',
+              'RAG Pipeline Patterns',
+              'Vector Databases Comparison',
+              'Embeddings & Semantic Search',
+              'LangChain Guide',
+              'Prompt Engineering',
+              'Chunking Strategies',
+              'FastAPI for ML',
+              'LLM Hallucination & Faithfulness',
+              'Production RAG Deployment',
+              'Retrieval Evaluation Metrics',
+            ].map((doc) => (
+              <span key={doc} className="text-xs bg-slate-800/80 border border-slate-700/50 text-slate-500 px-2 py-0.5 rounded">
+                {doc}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
     </div>

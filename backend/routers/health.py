@@ -50,7 +50,7 @@ async def health_check() -> HealthResponse:
         else:
             chroma_status = f"error: {err_str[:120]}"
 
-    overall = "ok" if (db_status == "ok" and chroma_status.startswith("ok")) else "degraded"
+    overall = "ok" if db_status == "ok" and chroma_status.startswith("ok") else "degraded"
 
     return HealthResponse(
         status=overall,

@@ -167,6 +167,14 @@ async def lifespan(application: FastAPI):
             logger.info("PostgreSQL connected")
         except Exception as e:
             logger.error(f"Database connection failed (non-fatal): {e}")
+
+        # Seed realistic sample data on first boot (idempotent)
+        try:
+            from backend.seeds import seed_all_sync
+            await asyncio.to_thread(seed_all_sync)
+            logger.info("Seeding complete")
+        except Exception as e:
+            logger.error(f"Seeding failed (non-fatal): {e}")
     else:
         logger.info("Skipping DB check — DATABASE_URL not configured")
 

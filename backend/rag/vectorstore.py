@@ -1,25 +1,26 @@
 """
-rag/vectorstore.py — ChromaDB setup and document ingestion.
+rag/vectorstore.py — Dual-mode vector store: ChromaDB (local) or PostgreSQL+numpy (Vercel).
 
 EMBEDDING STRATEGY:
-Using sentence-transformers locally (all-MiniLM-L6-v2) instead of OpenAI embeddings:
-- No API cost per document (critical for eval pipelines that re-ingest often)
-- No rate limiting during bulk ingestion
-- Reproducible: same model = same embeddings every time (eval consistency)
-- 384 dimensions: fast similarity search, low memory footprint
-- Quality: good enough for domain-general RAG; upgrade to BAAI/bge-large for prod
+  HuggingFace Inference API → sentence-transformers/all-MiniLM-L6-v2
+  384-dimensional embeddings, cosine similarity space.
+  No local model weights — keeps the bundle small and deployment simple.
+
+BACKEND SELECTION:
+  ChromaDB  → used when importable (local dev, Docker).
+  PostgresVectorStore → used on Vercel (ChromaDB requires libgomp.so.1 which is
+    absent in Vercel Lambda). Stores JSONB float arrays in PostgreSQL, performs
+    cosine similarity with numpy. Works identically from the caller's perspective.
 
 CHUNKING STRATEGY:
-- chunk_size=512 tokens: balances context richness vs retrieval precision
-  Too small (< 128): loses context, poor answers
-  Too large (> 1024): retrieves irrelevant content, hurts faithfulness score
-- chunk_overlap=50: prevents information loss at chunk boundaries
+  chunk_size=512, chunk_overlap=50, semantic separator order.
 """
 from __future__ import annotations
 
 import hashlib
 import uuid
 from pathlib import Path
+from typing import Optional
 
 try:
     import chromadb
@@ -31,7 +32,6 @@ except ImportError:
     _CHROMADB_AVAILABLE = False
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from huggingface_hub import InferenceClient
 from loguru import logger
 
@@ -40,326 +40,458 @@ from backend.config import get_settings
 settings = get_settings()
 
 
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _build_text_splitter() -> RecursiveCharacterTextSplitter:
+    return RecursiveCharacterTextSplitter(
+        chunk_size=512,
+        chunk_overlap=50,
+        separators=["\n\n", "\n", ". ", " ", ""],
+        length_function=len,
+    )
+
+
+def _embed_texts(hf_client: InferenceClient, texts: list[str]) -> list[list[float]]:
+    """Embed texts via HuggingFace Inference API."""
+    response = hf_client.feature_extraction(
+        text=texts,
+        model=settings.embedding_model,
+    )
+    if hasattr(response, "tolist"):
+        result = response.tolist()
+        if result and not isinstance(result[0], list):
+            return [result]
+        return result
+    return [list(vec) for vec in response]
+
+
+# ── PostgreSQL-backed vector store ────────────────────────────────────────────
+
+class PostgresVectorStore:
+    """
+    PostgreSQL-backed vector store: JSONB embeddings + numpy cosine similarity.
+
+    No native libraries required — works on Vercel Lambda and any Python env.
+    Suitable for demo-scale workloads (< 10 000 chunks, < 5 concurrent queries).
+
+    Embedding matrix is cached in memory per collection to avoid redundant DB
+    round-trips within a single Lambda invocation.
+    """
+
+    def __init__(self):
+        self._hf_client = InferenceClient(token=settings.hf_token or None)
+        self._splitter = _build_text_splitter()
+        # In-memory cache: collection → list of (id, doc_id, content, embedding, metadata)
+        self._cache: dict[str, list[dict]] = {}
+        logger.info(
+            f"PostgresVectorStore initialized | "
+            f"embedding_model={settings.embedding_model} (HF Inference API)"
+        )
+
+    # ── Internal DB helpers ───────────────────────────────────────────────────
+
+    def _get_engine(self):
+        from backend.database import _get_sync_engine
+        return _get_sync_engine()
+
+    def _session(self):
+        from sqlalchemy.orm import sessionmaker
+        factory = sessionmaker(bind=self._get_engine(), expire_on_commit=False)
+        return factory()
+
+    def _invalidate_cache(self, collection_name: str) -> None:
+        self._cache.pop(collection_name, None)
+
+    def _load_collection(self, collection_name: str) -> list[dict]:
+        """Load all chunks for a collection from PostgreSQL (cached per invocation)."""
+        if collection_name in self._cache:
+            return self._cache[collection_name]
+
+        from sqlalchemy import select
+        from backend.models import DocumentChunk
+
+        with self._session() as sess:
+            rows = sess.execute(
+                select(DocumentChunk)
+                .where(DocumentChunk.collection_name == collection_name)
+                .order_by(DocumentChunk.doc_id, DocumentChunk.chunk_index)
+            ).scalars().all()
+
+        chunks = [
+            {
+                "id": str(row.id),
+                "doc_id": row.doc_id,
+                "content": row.content,
+                "embedding": row.embedding,
+                "source": row.filename,
+                "metadata": row.chunk_metadata,
+            }
+            for row in rows
+        ]
+        self._cache[collection_name] = chunks
+        return chunks
+
+    def _store_chunks(
+        self,
+        collection_name: str,
+        doc_id: str,
+        filename: str,
+        chunk_texts: list[str],
+        embeddings: list[list[float]],
+        metadatas: list[dict],
+    ) -> None:
+        """Upsert chunks into document_chunks table (delete-then-insert for idempotency)."""
+        from sqlalchemy import delete
+        from backend.models import DocumentChunk
+
+        with self._session() as sess:
+            sess.execute(
+                delete(DocumentChunk).where(
+                    DocumentChunk.doc_id == doc_id,
+                    DocumentChunk.collection_name == collection_name,
+                )
+            )
+            for i, (text, emb, meta) in enumerate(zip(chunk_texts, embeddings, metadatas)):
+                sess.add(DocumentChunk(
+                    doc_id=doc_id,
+                    filename=filename,
+                    chunk_index=i,
+                    content=text,
+                    embedding=emb,
+                    collection_name=collection_name,
+                    chunk_metadata=meta,
+                ))
+            sess.commit()
+
+        self._invalidate_cache(collection_name)
+
+    # ── Core ingestion ────────────────────────────────────────────────────────
+
+    def ingest_text(
+        self,
+        text: str,
+        filename: str,
+        collection_name: Optional[str] = None,
+        extra_metadata: Optional[dict] = None,
+    ) -> dict:
+        collection_name = collection_name or settings.chroma_collection_name
+        doc_id = hashlib.sha256(f"{filename}:{text[:100]}".encode()).hexdigest()[:16]
+
+        chunks = _build_text_splitter().create_documents(
+            texts=[text],
+            metadatas=[{"source": filename, "doc_id": doc_id}],
+        )
+        if not chunks:
+            raise ValueError(f"No chunks produced from document: {filename}")
+
+        chunk_texts = [c.page_content for c in chunks]
+        metadatas = [
+            {"source": filename, "doc_id": doc_id, "chunk_index": i,
+             "total_chunks": len(chunks), **(extra_metadata or {})}
+            for i in range(len(chunks))
+        ]
+        embeddings = _embed_texts(self._hf_client, chunk_texts)
+
+        self._store_chunks(collection_name, doc_id, filename, chunk_texts, embeddings, metadatas)
+
+        logger.info(f"Ingested | filename={filename} | chunks={len(chunks)} | collection={collection_name}")
+        return {"doc_id": doc_id, "filename": filename, "chunks_created": len(chunks), "collection_name": collection_name}
+
+    def ingest_pdf(self, file_path: str, collection_name: Optional[str] = None) -> dict:
+        from langchain_community.document_loaders import PyPDFLoader
+        path = Path(file_path)
+        pages = PyPDFLoader(str(path)).load()
+        full_text = "\n\n".join(p.page_content for p in pages)
+        return self.ingest_text(
+            text=full_text, filename=path.name, collection_name=collection_name,
+            extra_metadata={"page_count": len(pages), "file_type": "pdf"},
+        )
+
+    # ── Retrieval ─────────────────────────────────────────────────────────────
+
+    def similarity_search(
+        self,
+        query: str,
+        collection_name: Optional[str] = None,
+        top_k: Optional[int] = None,
+    ) -> list[dict]:
+        import numpy as np
+        collection_name = collection_name or settings.chroma_collection_name
+        top_k = top_k or settings.retrieval_top_k
+        chunks = self._load_collection(collection_name)
+        if not chunks:
+            return []
+
+        q_emb = np.array(_embed_texts(self._hf_client, [query])[0])
+        embs = np.array([c["embedding"] for c in chunks])
+
+        # Cosine similarity
+        norms = np.linalg.norm(embs, axis=1) * np.linalg.norm(q_emb) + 1e-10
+        scores = (embs @ q_emb) / norms
+
+        top_idx = np.argsort(scores)[::-1][:top_k]
+        return [
+            {"content": chunks[i]["content"], "source": chunks[i]["source"],
+             "score": float(scores[i]), "metadata": chunks[i]["metadata"]}
+            for i in top_idx
+        ]
+
+    def mmr_search(
+        self,
+        query: str,
+        collection_name: Optional[str] = None,
+        top_k: Optional[int] = None,
+        fetch_k: int = 20,
+        lambda_mult: Optional[float] = None,
+    ) -> list[dict]:
+        import numpy as np
+        collection_name = collection_name or settings.chroma_collection_name
+        top_k = top_k or settings.retrieval_top_k
+        lambda_mult = lambda_mult if lambda_mult is not None else settings.retrieval_lambda
+        chunks = self._load_collection(collection_name)
+        if not chunks:
+            return []
+
+        q_emb = np.array(_embed_texts(self._hf_client, [query])[0])
+        embs = np.array([c["embedding"] for c in chunks])
+
+        # Relevance scores
+        norms = np.linalg.norm(embs, axis=1) * np.linalg.norm(q_emb) + 1e-10
+        relevance = (embs @ q_emb) / norms
+
+        # Fetch top candidates
+        n_candidates = min(fetch_k, len(chunks))
+        candidate_idx = list(np.argsort(relevance)[::-1][:n_candidates])
+
+        selected: list[int] = []
+        remaining = candidate_idx[:]
+
+        for _ in range(min(top_k, n_candidates)):
+            if not remaining:
+                break
+            if not selected:
+                best = max(remaining, key=lambda i: relevance[i])
+            else:
+                sel_embs = embs[selected]
+                best = max(
+                    remaining,
+                    key=lambda i: (
+                        lambda_mult * relevance[i]
+                        - (1 - lambda_mult) * float(np.max(
+                            (embs[i] @ sel_embs.T) /
+                            (np.linalg.norm(embs[i]) * np.linalg.norm(sel_embs, axis=1) + 1e-10)
+                        ))
+                    ),
+                )
+            selected.append(best)
+            remaining.remove(best)
+
+        return [
+            {"content": chunks[i]["content"], "source": chunks[i]["source"],
+             "score": float(relevance[i]), "metadata": chunks[i]["metadata"]}
+            for i in selected
+        ]
+
+    def get_collection_stats(self, collection_name: Optional[str] = None) -> dict:
+        from sqlalchemy import select, func
+        from backend.models import DocumentChunk
+        collection_name = collection_name or settings.chroma_collection_name
+        with self._session() as sess:
+            count = sess.execute(
+                select(func.count(DocumentChunk.id))
+                .where(DocumentChunk.collection_name == collection_name)
+            ).scalar_one()
+        return {"collection_name": collection_name, "document_count": count}
+
+    def doc_exists(self, doc_id: str, collection_name: Optional[str] = None) -> bool:
+        from sqlalchemy import select, func
+        from backend.models import DocumentChunk
+        collection_name = collection_name or settings.chroma_collection_name
+        with self._session() as sess:
+            count = sess.execute(
+                select(func.count(DocumentChunk.id))
+                .where(DocumentChunk.doc_id == doc_id,
+                       DocumentChunk.collection_name == collection_name)
+            ).scalar_one()
+        return count > 0
+
+
+# ── ChromaDB-backed vector store (local dev) ─────────────────────────────────
+
 class VectorStoreManager:
     """
-    Wraps ChromaDB operations with a clean interface.
+    ChromaDB-backed vector store for local development / Docker.
 
-    WHY NOT langchain's ChromaDB wrapper:
-    Using ChromaDB's native client gives us more control over:
-    - Custom embedding functions (our HF Inference API wrapper)
-    - Batch operations with progress tracking
-    - Collection management (list, delete, inspect)
+    Falls back automatically to PostgresVectorStore on Vercel where
+    chromadb is unavailable (libgomp.so.1 missing in Lambda runtime).
     """
 
     def __init__(self):
         if not _CHROMADB_AVAILABLE:
             raise RuntimeError(
                 "chromadb is not installed. "
-                "On Vercel, the vector store is unavailable (libgomp.so.1 missing). "
-                "For local development: pip install chromadb==0.5.0"
+                "On Vercel, PostgresVectorStore is used instead. "
+                "For local full-RAG development: pip install chromadb==0.5.0"
             )
-        # PersistentClient: data survives process restarts
-        # EphemeralClient: in-memory only (good for testing)
         self._client = chromadb.PersistentClient(
             path=settings.chroma_persist_dir,
             settings=ChromaSettings(anonymized_telemetry=False),
         )
         self._hf_client = InferenceClient(token=settings.hf_token or None)
-        self._text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=512,
-            chunk_overlap=50,
-            # Split on semantic boundaries first, then fall back to chars
-            separators=["\n\n", "\n", ". ", " ", ""],
-            length_function=len,
-        )
+        self._splitter = _build_text_splitter()
         logger.info(
-            f"VectorStoreManager initialized | "
-            f"embedding_model={settings.embedding_model} (HF Inference API) | "
+            f"VectorStoreManager (ChromaDB) initialized | "
+            f"embedding_model={settings.embedding_model} | "
             f"persist_dir={settings.chroma_persist_dir}"
         )
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts via HuggingFace Inference API (no local model weights needed)."""
-        # huggingface_hub 0.23.x: feature_extraction(text, model) only — no normalize param.
-        # BAAI/bge models return L2-normalized embeddings by default.
-        response = self._hf_client.feature_extraction(
-            text=texts,
-            model=settings.embedding_model,
-        )
-        if hasattr(response, "tolist"):
-            result = response.tolist()
-            # Guard: single-text calls may return (dim,) instead of (1, dim)
-            if result and not isinstance(result[0], list):
-                return [result]
-            return result
-        return [list(vec) for vec in response]
+        return _embed_texts(self._hf_client, texts)
 
-    def get_or_create_collection(self, collection_name: str) -> chromadb.Collection:
-        """
-        Get existing collection or create new one.
-        cosine distance: standard for semantic similarity search.
-        """
+    def get_or_create_collection(self, collection_name: str):
         return self._client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
 
-    def ingest_text(
-        self,
-        text: str,
-        filename: str,
-        collection_name: str | None = None,
-        extra_metadata: dict | None = None,
-    ) -> dict:
-        """
-        Ingest raw text into ChromaDB.
-        
-        Returns ingestion stats for API response and PostgreSQL tracking.
-        """
+    def ingest_text(self, text: str, filename: str, collection_name=None, extra_metadata=None) -> dict:
         collection_name = collection_name or settings.chroma_collection_name
         collection = self.get_or_create_collection(collection_name)
-
-        # Deterministic doc_id: same file = same ID prevents duplicates
         doc_id = hashlib.sha256(f"{filename}:{text[:100]}".encode()).hexdigest()[:16]
 
-        chunks = self._text_splitter.create_documents(
-            texts=[text],
-            metadatas=[{"source": filename, "doc_id": doc_id}],
+        chunks = self._splitter.create_documents(
+            texts=[text], metadatas=[{"source": filename, "doc_id": doc_id}],
         )
-
         if not chunks:
             raise ValueError(f"No chunks produced from document: {filename}")
 
-        chunk_texts = [chunk.page_content for chunk in chunks]
+        chunk_texts = [c.page_content for c in chunks]
         chunk_ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
         chunk_metadata = [
-            {
-                "source": filename,
-                "doc_id": doc_id,
-                "chunk_index": i,
-                "total_chunks": len(chunks),
-                **(extra_metadata or {}),
-            }
+            {"source": filename, "doc_id": doc_id, "chunk_index": i,
+             "total_chunks": len(chunks), **(extra_metadata or {})}
             for i in range(len(chunks))
         ]
-
         embeddings = self._embed(chunk_texts)
+        collection.upsert(ids=chunk_ids, documents=chunk_texts, embeddings=embeddings, metadatas=chunk_metadata)
 
-        # upsert: idempotent — re-ingesting the same doc updates chunks, not duplicates
-        collection.upsert(
-            ids=chunk_ids,
-            documents=chunk_texts,
-            embeddings=embeddings,
-            metadatas=chunk_metadata,
-        )
+        logger.info(f"Ingested | filename={filename} | chunks={len(chunks)} | collection={collection_name}")
+        return {"doc_id": doc_id, "filename": filename, "chunks_created": len(chunks), "collection_name": collection_name}
 
-        logger.info(
-            f"Ingested document | filename={filename} | "
-            f"chunks={len(chunks)} | collection={collection_name}"
-        )
-
-        return {
-            "doc_id": doc_id,
-            "filename": filename,
-            "chunks_created": len(chunks),
-            "collection_name": collection_name,
-        }
-
-    def ingest_pdf(self, file_path: str, collection_name: str | None = None) -> dict:
-        """Ingest a PDF file by extracting text and delegating to ingest_text."""
+    def ingest_pdf(self, file_path: str, collection_name=None) -> dict:
+        from langchain_community.document_loaders import PyPDFLoader
         path = Path(file_path)
-        loader = PyPDFLoader(str(path))
-        pages = loader.load()
-        full_text = "\n\n".join(page.page_content for page in pages)
-        return self.ingest_text(
-            text=full_text,
-            filename=path.name,
-            collection_name=collection_name,
-            extra_metadata={"page_count": len(pages), "file_type": "pdf"},
-        )
+        pages = PyPDFLoader(str(path)).load()
+        full_text = "\n\n".join(p.page_content for p in pages)
+        return self.ingest_text(text=full_text, filename=path.name, collection_name=collection_name,
+                                extra_metadata={"page_count": len(pages), "file_type": "pdf"})
 
-    def similarity_search(
-        self,
-        query: str,
-        collection_name: str | None = None,
-        top_k: int | None = None,
-    ) -> list[dict]:
-        """
-        Standard cosine similarity search.
-        Returns list of {content, source, score, metadata}.
-        """
+    def similarity_search(self, query: str, collection_name=None, top_k=None) -> list[dict]:
         collection_name = collection_name or settings.chroma_collection_name
-        collection = self.get_or_create_collection(collection_name)
         top_k = top_k or settings.retrieval_top_k
-
+        collection = self.get_or_create_collection(collection_name)
         if collection.count() == 0:
             return []
-
-        query_embedding = self._embed([query])[0]
-
+        q_emb = self._embed([query])[0]
         results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(top_k, collection.count()),
+            query_embeddings=[q_emb], n_results=min(top_k, collection.count()),
             include=["documents", "metadatas", "distances"],
         )
-
         if not results["documents"] or not results["documents"][0]:
             return []
-
         return [
-            {
-                "content": doc,
-                "source": meta.get("source", "unknown"),
-                # ChromaDB returns distance (lower=closer); convert to similarity score
-                "score": 1.0 - dist,
-                "metadata": meta,
-            }
-            for doc, meta, dist in zip(
-                results["documents"][0],
-                results["metadatas"][0],
-                results["distances"][0],
-            )
+            {"content": doc, "source": meta.get("source", "unknown"),
+             "score": 1.0 - dist, "metadata": meta}
+            for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0])
         ]
 
-    def mmr_search(
-        self,
-        query: str,
-        collection_name: str | None = None,
-        top_k: int | None = None,
-        fetch_k: int = 20,
-        lambda_mult: float | None = None,
-    ) -> list[dict]:
-        """
-        Maximal Marginal Relevance (MMR) search.
-        
-        WHY MMR:
-        Standard similarity search returns the most similar chunks — but they
-        might all be near-duplicates (e.g., same paragraph repeated). MMR
-        penalizes redundancy, returning a DIVERSE set of relevant chunks.
-        
-        This matters for RAGAS context_precision: diverse chunks give the LLM
-        more informational surface area, reducing hallucination risk.
-        
-        lambda_mult: 0.0 = maximize diversity, 1.0 = maximize similarity
-        0.5 is a good default (per MMR paper, Carbonell & Goldstein 1998)
-        """
+    def mmr_search(self, query: str, collection_name=None, top_k=None, fetch_k=20, lambda_mult=None) -> list[dict]:
         collection_name = collection_name or settings.chroma_collection_name
-        collection = self.get_or_create_collection(collection_name)
         top_k = top_k or settings.retrieval_top_k
-        lambda_mult = lambda_mult or settings.retrieval_lambda
-
+        lambda_mult = lambda_mult if lambda_mult is not None else settings.retrieval_lambda
+        collection = self.get_or_create_collection(collection_name)
         if collection.count() == 0:
             return []
 
-        query_embedding = self._embed([query])[0]
-
-        # Fetch more candidates than needed, then MMR-select the final top_k
+        import numpy as np
+        q_emb = self._embed([query])[0]
         candidates = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(fetch_k, collection.count()),
+            query_embeddings=[q_emb], n_results=min(fetch_k, collection.count()),
             include=["documents", "metadatas", "distances", "embeddings"],
         )
-
         if not candidates["documents"][0]:
             return []
 
-        # Run MMR selection algorithm
         selected_indices = self._mmr_select(
-            query_embedding=query_embedding,
-            candidate_embeddings=candidates["embeddings"][0],
-            top_k=min(top_k, len(candidates["documents"][0])),
-            lambda_mult=lambda_mult,
+            query_embedding=q_emb, candidate_embeddings=candidates["embeddings"][0],
+            top_k=min(top_k, len(candidates["documents"][0])), lambda_mult=lambda_mult,
         )
-
         return [
-            {
-                "content": candidates["documents"][0][i],
-                "source": candidates["metadatas"][0][i].get("source", "unknown"),
-                "score": 1.0 - candidates["distances"][0][i],
-                "metadata": candidates["metadatas"][0][i],
-            }
+            {"content": candidates["documents"][0][i], "source": candidates["metadatas"][0][i].get("source", "unknown"),
+             "score": 1.0 - candidates["distances"][0][i], "metadata": candidates["metadatas"][0][i]}
             for i in selected_indices
         ]
 
     @staticmethod
-    def _mmr_select(
-        query_embedding: list[float],
-        candidate_embeddings: list[list[float]],
-        top_k: int,
-        lambda_mult: float,
-    ) -> list[int]:
-        """
-        Pure MMR selection over pre-fetched candidates.
-        
-        Score = λ * relevance(query, doc) - (1-λ) * max_similarity(doc, selected)
-        
-        Iteratively selects the candidate that maximizes this score,
-        balancing query relevance against redundancy with already-selected docs.
-        """
+    def _mmr_select(query_embedding, candidate_embeddings, top_k, lambda_mult) -> list[int]:
         import numpy as np
-
-        query_vec = np.array(query_embedding)
-        cand_vecs = np.array(candidate_embeddings)
-
-        # Relevance scores: cosine similarity to query
-        relevance = (cand_vecs @ query_vec) / (
-            np.linalg.norm(cand_vecs, axis=1) * np.linalg.norm(query_vec) + 1e-10
-        )
-
+        q_vec = np.array(query_embedding)
+        c_vecs = np.array(candidate_embeddings)
+        relevance = (c_vecs @ q_vec) / (np.linalg.norm(c_vecs, axis=1) * np.linalg.norm(q_vec) + 1e-10)
         selected: list[int] = []
         remaining = list(range(len(candidate_embeddings)))
-
         for _ in range(top_k):
             if not remaining:
                 break
-
             if not selected:
-                # First selection: pure relevance
                 best = max(remaining, key=lambda i: relevance[i])
             else:
-                # Subsequent: MMR score
-                selected_vecs = cand_vecs[selected]
-                best = max(
-                    remaining,
-                    key=lambda i: (
-                        lambda_mult * relevance[i]
-                        - (1 - lambda_mult)
-                        * float(
-                            np.max(
-                                (cand_vecs[i] @ selected_vecs.T)
-                                / (
-                                    np.linalg.norm(cand_vecs[i])
-                                    * np.linalg.norm(selected_vecs, axis=1)
-                                    + 1e-10
-                                )
-                            )
-                        )
-                    ),
-                )
-
+                sel_vecs = c_vecs[selected]
+                best = max(remaining, key=lambda i: (
+                    lambda_mult * relevance[i] - (1 - lambda_mult) * float(np.max(
+                        (c_vecs[i] @ sel_vecs.T) / (np.linalg.norm(c_vecs[i]) * np.linalg.norm(sel_vecs, axis=1) + 1e-10)
+                    ))
+                ))
             selected.append(best)
             remaining.remove(best)
-
         return selected
 
-    def get_collection_stats(self, collection_name: str | None = None) -> dict:
-        """Returns count and sample of documents in collection."""
+    def get_collection_stats(self, collection_name=None) -> dict:
         collection_name = collection_name or settings.chroma_collection_name
         collection = self.get_or_create_collection(collection_name)
-        return {
-            "collection_name": collection_name,
-            "document_count": collection.count(),
-        }
+        return {"collection_name": collection_name, "document_count": collection.count()}
+
+    def doc_exists(self, doc_id: str, collection_name=None) -> bool:
+        collection_name = collection_name or settings.chroma_collection_name
+        collection = self.get_or_create_collection(collection_name)
+        try:
+            results = collection.get(ids=[f"{doc_id}_chunk_0"])
+            return bool(results["ids"])
+        except Exception:
+            return False
 
 
-# Module-level singleton — shared across the app lifecycle
-# Initialized once in main.py lifespan, avoids model reload overhead
-_vector_store: VectorStoreManager | None = None
+# ── Factory — auto-selects backend ───────────────────────────────────────────
+
+_vector_store: VectorStoreManager | PostgresVectorStore | None = None
 
 
-def get_vector_store() -> VectorStoreManager:
-    """FastAPI dependency for VectorStoreManager."""
+def get_vector_store() -> VectorStoreManager | PostgresVectorStore:
+    """
+    Return the appropriate vector store:
+      - ChromaDB (VectorStoreManager) when chromadb is importable (local dev)
+      - PostgresVectorStore when chromadb is unavailable (Vercel)
+    """
     global _vector_store
-    if _vector_store is None:
-        _vector_store = VectorStoreManager()
+    if _vector_store is not None:
+        return _vector_store
+
+    if _CHROMADB_AVAILABLE:
+        try:
+            _vector_store = VectorStoreManager()
+            return _vector_store
+        except Exception as e:
+            logger.warning(f"ChromaDB init failed, falling back to PostgresVectorStore: {e}")
+
+    _vector_store = PostgresVectorStore()
     return _vector_store
