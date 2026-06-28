@@ -19,6 +19,7 @@
   "routes": [
     { "src": "/api/(.*)", "dest": "backend/main.py" },
     { "src": "/health", "dest": "backend/main.py" },
+    { "src": "/diag", "dest": "backend/main.py" },
     { "src": "/docs", "dest": "backend/main.py" },
     { "src": "/redoc", "dest": "backend/main.py" },
     { "src": "/openapi.json", "dest": "backend/main.py" },
