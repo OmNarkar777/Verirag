@@ -545,6 +545,18 @@ async def diag_psycopg3():
         results["sa_vercel_session"] = f"{type(ex).__name__}: {traceback.format_exc()[-600:]}"
 
     results["user_from_url"] = str(_user)
+    results["host_from_url"] = str(_host)
+    # Password diagnostics (never expose value — only metadata)
+    from urllib.parse import unquote as _unquote
+    _pw_raw = _pu.password or ""
+    _pw_decoded = _unquote(_pw_raw)
+    results["password_info"] = {
+        "raw_len": len(_pw_raw),
+        "decoded_len": len(_pw_decoded),
+        "raw_has_at": "@" in _pw_raw,
+        "decoded_has_at": "@" in _pw_decoded,
+        "raw_has_percent": "%" in _pw_raw,
+    }
     return results
 
 
