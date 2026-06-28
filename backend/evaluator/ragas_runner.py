@@ -128,12 +128,21 @@ class RagasRunner:
             dataset = build_ragas_dataset(test_cases)
             metrics = self._configure_metrics()
 
-            logger.info("Running RAGAS evaluate() in thread pool â€” may take several minutes...")
-            # get_running_loop() is correct inside async; get_event_loop() is deprecated 3.10+
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None, lambda: evaluate(dataset=dataset, metrics=metrics)
-            )
+            logger.info(“Running RAGAS evaluate() in thread pool...”)
+
+            def _ragas_in_thread():
+                # Python 3.12: asyncio.get_event_loop() raises RuntimeError in non-main
+                # threads without a running loop. RAGAS internals call this, so we must
+                # provide a fresh event loop in the worker thread before calling evaluate().
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return evaluate(dataset=dataset, metrics=metrics)
+                finally:
+                    loop.close()
+                    asyncio.set_event_loop(None)
+
+            result = await asyncio.get_running_loop().run_in_executor(None, _ragas_in_thread)
 
             scores_df = result.to_pandas()
             logger.info(f"RAGAS evaluate() complete | shape={scores_df.shape}")
