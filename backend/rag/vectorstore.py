@@ -15,6 +15,7 @@ CHUNKING STRATEGY:
   Too large (> 1024): retrieves irrelevant content, hurts faithfulness score
 - chunk_overlap=50: prevents information loss at chunk boundaries
 """
+from __future__ import annotations
 
 import hashlib
 import uuid

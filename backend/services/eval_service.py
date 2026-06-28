@@ -9,6 +9,7 @@ This separation enables:
 - Reusing logic across routes (e.g., both REST and future gRPC)
 - Clean dependency injection without route handler bloat
 """
+from __future__ import annotations
 
 import uuid
 

@@ -6,6 +6,7 @@ POST /pipeline/ingest  → upload text or PDF to ChromaDB
 POST /pipeline/query   → query the RAG pipeline, get answer + chunks
 GET  /pipeline/stats   → collection stats
 """
+from __future__ import annotations
 
 import tempfile
 import os

@@ -1,4 +1,5 @@
 ﻿"""models.py â€” SQLAlchemy ORM models for VeriRAG (Phase 2)."""
+from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 

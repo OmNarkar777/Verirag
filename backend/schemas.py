@@ -1,4 +1,5 @@
 ﻿"""schemas.py â€” Pydantic v2 request/response schemas."""
+from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Any

@@ -7,6 +7,7 @@ WHY SEPARATE RETRIEVER FROM VECTORSTORE:
 - This separation lets us swap retrieval strategies (BM25, hybrid, reranking)
   without touching storage code — a common RAG architecture pattern
 """
+from __future__ import annotations
 
 from langsmith import traceable
 from loguru import logger

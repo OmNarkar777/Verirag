@@ -37,6 +37,7 @@ CONTEXT RECALL (0-1):
   Common failure: retrieved chunks miss key information from the corpus.
   Fix: larger top_k, better chunking strategy, hybrid search.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass
 

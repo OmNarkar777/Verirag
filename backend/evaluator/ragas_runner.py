@@ -1,4 +1,5 @@
 ﻿"""evaluator/ragas_runner.py â€” Core RAGAS evaluation engine with regression detection."""
+from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone

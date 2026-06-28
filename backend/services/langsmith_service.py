@@ -1,4 +1,5 @@
 ﻿"""services/langsmith_service.py â€” LangSmith integration (gracefully disabled if no key)."""
+from __future__ import annotations
 from typing import Any
 from loguru import logger
 from backend.config import get_settings
