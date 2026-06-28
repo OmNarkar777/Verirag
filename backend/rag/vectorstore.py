@@ -96,10 +96,12 @@ def _fallback_embed(texts: list[str], dim: int = _EMBED_DIM) -> list[list[float]
 
 def _embed_texts(hf_client: InferenceClient, texts: list[str]) -> list[list[float]]:
     """
-    Embed texts via HuggingFace Inference API.
-    Falls back to _fallback_embed() on auth/rate-limit errors so the app
-    continues functioning without HF_TOKEN in serverless environments.
+    Embed texts. Uses local TF-IDF fallback when HF_TOKEN is absent (default on Vercel).
+    Only calls api-inference.huggingface.co when a token is explicitly configured.
     """
+    if not settings.hf_token:
+        return _fallback_embed(texts)
+
     try:
         response = hf_client.feature_extraction(
             text=texts,
@@ -112,11 +114,8 @@ def _embed_texts(hf_client: InferenceClient, texts: list[str]) -> list[list[floa
             return result
         return [list(vec) for vec in response]
     except Exception as e:
-        err = str(e)
-        if any(code in err for code in ("401", "429", "Unauthorized", "Rate limit", "503")):
-            logger.warning(f"HF Inference API unavailable ({err[:60]}); using local fallback embedder")
-            return _fallback_embed(texts)
-        raise
+        logger.warning(f"HF Inference API error ({str(e)[:80]}); using local fallback embedder")
+        return _fallback_embed(texts)
 
 
 # ── PostgreSQL-backed vector store ────────────────────────────────────────────
@@ -137,10 +136,8 @@ class PostgresVectorStore:
         self._splitter = _build_text_splitter()
         # In-memory cache: collection → list of (id, doc_id, content, embedding, metadata)
         self._cache: dict[str, list[dict]] = {}
-        logger.info(
-            f"PostgresVectorStore initialized | "
-            f"embedding_model={settings.embedding_model} (HF Inference API)"
-        )
+        embed_mode = f"HF Inference API ({settings.embedding_model})" if settings.hf_token else "local TF-IDF fallback"
+        logger.info(f"PostgresVectorStore initialized | embedding={embed_mode}")
 
     # ── Internal DB helpers ───────────────────────────────────────────────────
 
