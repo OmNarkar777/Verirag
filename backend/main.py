@@ -316,7 +316,9 @@ async def diag():
         try:
             import psycopg._conninfo_attempts as _cca_mod
             import inspect as _insp
-            psycopg3_internals["source"] = _insp.getsource(_cca_mod)[:3000]
+            # Show lines 58-130 to see full _resolve_hostnames body
+            src_lines = _insp.getsource(_cca_mod).split("\n")
+            psycopg3_internals["source_resolve_hostnames"] = "\n".join(src_lines[57:135])
         except Exception as _e:
             psycopg3_internals["source_err"] = str(_e)
         try:
@@ -332,8 +334,60 @@ async def diag():
             }
             _attempts = _ca(_ca_params)
             psycopg3_internals["attempts_ok"] = f"{len(_attempts)} attempt(s)"
+            psycopg3_internals["attempts_detail"] = [
+                {k: v for k, v in a.items() if k in ("host", "hostaddr", "port", "sslmode")}
+                for a in _attempts
+            ]
         except Exception as _e:
             psycopg3_internals["attempts_err"] = f"{type(_e).__name__}: {_e}"
+
+    # Non-blocking socket probe: exactly mimics psycopg3's connect_ex() + select()
+    nb_socket_probe = "skipped"
+    if db_url_raw:
+        try:
+            import socket as _sm3, select as _sel3, errno as _ern3, os as _os3
+            _s3 = _sm3.socket(_sm3.AF_INET, _sm3.SOCK_STREAM)
+            _s3.setblocking(False)
+            _ce3 = _s3.connect_ex((_h2, _pt2))
+            if _ce3 not in (0, _ern3.EINPROGRESS):
+                nb_socket_probe = f"connect_ex={_ce3} ({_os3.strerror(_ce3)})"
+                _s3.close()
+            else:
+                _, _w3, _ = _sel3.select([], [_s3], [], 10)
+                if _w3:
+                    _so3 = _s3.getsockopt(_sm3.SOL_SOCKET, _sm3.SO_ERROR)
+                    nb_socket_probe = f"SO_ERROR={_so3}" if _so3 else "NON-BLOCKING CONNECT OK"
+                else:
+                    nb_socket_probe = "TIMEOUT"
+                _s3.close()
+        except Exception as _ne:
+            nb_socket_probe = f"{type(_ne).__name__}: {_ne}"
+
+    # Direct psycopg3 connect from asyncio.to_thread() — bypasses SQLAlchemy entirely
+    direct_psycopg3_probe = "skipped"
+    if os.environ.get("VERCEL") and db_url_raw:
+        try:
+            from urllib.parse import urlparse as _up5
+            _pu5 = _up5(db_url_raw)
+            def _psycopg_direct():
+                import asyncio as _a5
+                _a5.set_event_loop(None)  # ensure thread has no loop reference
+                import psycopg as _pg5
+                _conn5 = _pg5.connect(
+                    host=_pu5.hostname,
+                    port=_pu5.port or 6543,
+                    dbname=(_pu5.path or "/postgres").lstrip("/"),
+                    user=_pu5.username,
+                    password=_pu5.password,
+                    sslmode="disable",
+                    prepare_threshold=None,
+                )
+                _v5 = _conn5.execute("SELECT version()").fetchone()[0]
+                _conn5.close()
+                return _v5
+            direct_psycopg3_probe = await asyncio.to_thread(_psycopg_direct)
+        except Exception as _e5:
+            direct_psycopg3_probe = f"{type(_e5).__name__}: {traceback.format_exc()}"
 
     # Live DB probe — uses get_db_context() which routes through sync psycopg3
     # on Vercel (libpq, not asyncio/uvloop → no EBUSY) or asyncpg locally.
@@ -395,6 +449,8 @@ async def diag():
         "raw_socket_probe": raw_socket_probe,
         "raw_thread_probe": raw_thread_probe,
         "psycopg3_internals": psycopg3_internals,
+        "nb_socket_probe": nb_socket_probe,
+        "direct_psycopg3_probe": direct_psycopg3_probe,
         "db_probe": db_probe,
         "python_version": sys.version,
         "event_loop": loop_type,
