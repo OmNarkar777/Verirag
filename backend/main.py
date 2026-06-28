@@ -245,8 +245,9 @@ except Exception as _router_err:
 
 @app.get("/diag", include_in_schema=False)
 async def diag():
-    """Diagnostic endpoint: exposes boot/import errors for debugging."""
+    """Diagnostic endpoint: exposes boot/import errors and live DB probe."""
     import re
+    from urllib.parse import urlparse
     env_snapshot = {
         k: ("set" if v else "empty")
         for k, v in os.environ.items()
@@ -256,14 +257,33 @@ async def diag():
             "APP_ENV", "VERCEL", "VERCEL_ENV", "LANGCHAIN_API_KEY",
         )
     }
-    # Expose DB URL host/port (no credentials) so we can debug SSL/format issues remotely
-    db_url = os.environ.get("DATABASE_URL", "")
-    db_url_safe = re.sub(r"://[^@]+@", "://***:***@", db_url) if db_url else "not set"
+    db_url_raw = os.environ.get("DATABASE_URL", "")
+    # Parse host/port safely (handles passwords containing @)
+    try:
+        parsed = urlparse(db_url_raw)
+        db_url_host = f"{parsed.scheme}://***:***@{parsed.hostname}:{parsed.port}{parsed.path}"
+    except Exception:
+        db_url_host = "parse error"
+
+    # Live DB probe — full traceback on failure
+    db_probe = "skipped"
+    if db_url_raw and _settings:
+        try:
+            from backend.database import get_engine
+            from sqlalchemy import text
+            engine = get_engine()
+            async with engine.connect() as conn:
+                result = await conn.execute(text("SELECT version()"))
+                db_probe = result.scalar()
+        except Exception as probe_exc:
+            db_probe = traceback.format_exc()
+
     return {
         "boot_ok": _BOOT_ERROR is None,
         "boot_error": _BOOT_ERROR,
         "env": env_snapshot,
-        "db_url_host": db_url_safe,
+        "db_url_host": db_url_host,
+        "db_probe": db_probe,
         "python_version": sys.version,
     }
 
