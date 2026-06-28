@@ -136,21 +136,18 @@ async def lifespan(application: FastAPI):
     except Exception as e:
         logger.error(f"RAGAS runner init failed (non-fatal): {e}")
 
-    # Run Alembic migrations then verify DB connectivity (both non-fatal)
+    # Create tables then verify connectivity (both non-fatal)
     if s.database_url:
         try:
-            import asyncio
-            from alembic.config import Config as AlembicConfig
-            from alembic import command as alembic_command
-
-            alembic_cfg = AlembicConfig("alembic.ini")
-            # Alembic is synchronous — run in thread pool to avoid blocking event loop
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: alembic_command.upgrade(alembic_cfg, "head")
-            )
-            logger.info("Alembic migrations applied (head)")
+            from backend.database import Base
+            engine = get_engine()
+            # create_all is idempotent — safe to call on every cold start.
+            # Runs in the SAME event loop (no nested asyncio.run / EBUSY race).
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database schema ready (create_all applied)")
         except Exception as e:
-            logger.error(f"Alembic migration failed (non-fatal, tables may already exist): {e}")
+            logger.error(f"Schema creation failed (non-fatal): {e}")
 
         try:
             async with get_db_context() as db:
@@ -249,6 +246,7 @@ except Exception as _router_err:
 @app.get("/diag", include_in_schema=False)
 async def diag():
     """Diagnostic endpoint: exposes boot/import errors for debugging."""
+    import re
     env_snapshot = {
         k: ("set" if v else "empty")
         for k, v in os.environ.items()
@@ -258,10 +256,14 @@ async def diag():
             "APP_ENV", "VERCEL", "VERCEL_ENV", "LANGCHAIN_API_KEY",
         )
     }
+    # Expose DB URL host/port (no credentials) so we can debug SSL/format issues remotely
+    db_url = os.environ.get("DATABASE_URL", "")
+    db_url_safe = re.sub(r"://[^@]+@", "://***:***@", db_url) if db_url else "not set"
     return {
         "boot_ok": _BOOT_ERROR is None,
         "boot_error": _BOOT_ERROR,
         "env": env_snapshot,
+        "db_url_host": db_url_safe,
         "python_version": sys.version,
     }
 

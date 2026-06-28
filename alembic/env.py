@@ -1,6 +1,8 @@
-﻿"""alembic/env.py â€” Async Alembic migration environment."""
+"""alembic/env.py — Async Alembic migration environment."""
 import asyncio
 import os
+import re
+import ssl as _ssl
 from logging.config import fileConfig
 
 from alembic import context
@@ -18,12 +20,23 @@ from backend.models import EvalRun, EvalCase, PipelineDocument  # noqa: E402, F4
 
 target_metadata = Base.metadata
 
+_CLOUD_HOSTS = ("supabase.com", "neon.tech", "render.com")
+
 
 def get_url() -> str:
     url = os.getenv("DATABASE_URL", "postgresql+asyncpg://verirag:verirag_secret@localhost:5432/verirag")
     if not url.startswith("postgresql+asyncpg"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    # Remove psycopg2-style sslmode param that asyncpg ignores/warns about
+    url = re.sub(r"[?&]sslmode=\w+", "", url)
     return url
+
+
+def get_connect_args(url: str) -> dict:
+    if any(h in url for h in _CLOUD_HOSTS):
+        ctx = _ssl.create_default_context()
+        return {"ssl": ctx}
+    return {}
 
 
 def run_migrations_offline() -> None:
@@ -44,13 +57,13 @@ def do_run_migrations(connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    connectable = create_async_engine(get_url())
+    url = get_url()
+    connectable = create_async_engine(url, connect_args=get_connect_args(url))
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()
 
 
-# IMPORTANT: always guard with is_offline_mode() â€” never run at import time
 if context.is_offline_mode():
     run_migrations_offline()
 else:

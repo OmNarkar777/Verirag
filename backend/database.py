@@ -24,6 +24,30 @@ _engine = None
 _session_factory = None
 
 
+def _build_connect_args(url: str) -> dict:
+    """
+    Return asyncpg connect_args appropriate for the target database.
+
+    Supabase and Neon require SSL. asyncpg ignores psycopg2-style
+    `sslmode=require` query params — the only way to enable SSL with
+    asyncpg is via connect_args={'ssl': <SSLContext>} or ssl=True.
+    We detect cloud-hosted providers by hostname and force SSL on.
+    """
+    cloud_hosts = ("supabase.com", "neon.tech", "neon.database.azure.com", "render.com")
+    if any(h in url for h in cloud_hosts):
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        return {"ssl": ctx}
+    # Strip any stray sslmode= that asyncpg would choke on
+    return {}
+
+
+def _clean_url(url: str) -> str:
+    """Remove psycopg2-style sslmode param — asyncpg ignores it and may warn."""
+    import re
+    return re.sub(r"[?&]sslmode=\w+", "", url)
+
+
 def get_engine():
     global _engine
     if _engine is None:
@@ -33,21 +57,25 @@ def get_engine():
                 "Add it in your Vercel project environment variables. "
                 "Example: postgresql+asyncpg://user:pass@host:5432/dbname"
             )
-        # Use NullPool on Vercel serverless - each function invocation is isolated,
+        url = _clean_url(settings.database_url)
+        connect_args = _build_connect_args(url)
+        # Use NullPool on Vercel serverless — each invocation is isolated,
         # so persistent connection pools waste resources and exhaust DB connections.
         if os.environ.get("VERCEL"):
             from sqlalchemy.pool import NullPool
             _engine = create_async_engine(
-                settings.database_url,
+                url,
                 poolclass=NullPool,
+                connect_args=connect_args,
                 echo=False,
             )
         else:
             _engine = create_async_engine(
-                settings.database_url,
+                url,
                 pool_pre_ping=True,
                 pool_size=5,
                 max_overflow=10,
+                connect_args=connect_args,
                 echo=not settings.is_production,
             )
     return _engine
