@@ -371,7 +371,7 @@ async def diag():
             _pu5 = _up5(db_url_raw)
             def _psycopg_direct():
                 import asyncio as _a5
-                _a5.set_event_loop(None)  # ensure thread has no loop reference
+                _a5.set_event_loop(None)
                 import psycopg as _pg5
                 _conn5 = _pg5.connect(
                     host=_pu5.hostname,
@@ -388,6 +388,53 @@ async def diag():
             direct_psycopg3_probe = await asyncio.to_thread(_psycopg_direct)
         except Exception as _e5:
             direct_psycopg3_probe = f"{type(_e5).__name__}: {traceback.format_exc()}"
+
+    # psycopg3 from custom ThreadPoolExecutor(max_workers=1) — same as _VercelSession
+    custom_thread_psycopg3_probe = "skipped"
+    # SA connect args probe — shows exactly what SQLAlchemy passes to psycopg3
+    sa_connect_args_probe: dict = {}
+    if os.environ.get("VERCEL") and db_url_raw:
+        from concurrent.futures import ThreadPoolExecutor as _TPE5
+        try:
+            def _psycopg_custom_thread():
+                import asyncio as _a6
+                _a6.set_event_loop(None)
+                import psycopg as _pg6
+                from urllib.parse import urlparse as _up6
+                _pu6 = _up6(db_url_raw)
+                _conn6 = _pg6.connect(
+                    host=_pu6.hostname,
+                    port=_pu6.port or 6543,
+                    dbname=(_pu6.path or "/postgres").lstrip("/"),
+                    user=_pu6.username,
+                    password=_pu6.password,
+                    sslmode="disable",
+                    prepare_threshold=None,
+                )
+                _v6 = _conn6.execute("SELECT version()").fetchone()[0]
+                _conn6.close()
+                return _v6
+            _exe6 = _TPE5(max_workers=1, thread_name_prefix="verirag-db")
+            _loop6 = asyncio.get_running_loop()
+            custom_thread_psycopg3_probe = await _loop6.run_in_executor(_exe6, _psycopg_custom_thread)
+            _exe6.shutdown(wait=False)
+        except Exception as _e6:
+            _exe6.shutdown(wait=False)
+            custom_thread_psycopg3_probe = f"{type(_e6).__name__}: {traceback.format_exc()}"
+        try:
+            from backend.database import _get_sync_engine as _gse
+            _eng6 = _gse()
+            _dial6 = _eng6.dialect
+            _cargs6, _cparams6 = _dial6.create_connect_args(_eng6.url)
+            _safe6 = {k: ("***" if k in ("password", "conninfo") else v)
+                      for k, v in _cparams6.items()}
+            if "conninfo" in _cparams6:
+                import re as _re6
+                _ci = _cparams6["conninfo"]
+                _safe6["conninfo_masked"] = _re6.sub(r"password=[^\s]+", "password=***", _ci)
+            sa_connect_args_probe = {"cargs": _cargs6, "cparams": _safe6}
+        except Exception as _e6b:
+            sa_connect_args_probe = {"err": f"{type(_e6b).__name__}: {_e6b}"}
 
     # Live DB probe — uses get_db_context() which routes through sync psycopg3
     # on Vercel (libpq, not asyncio/uvloop → no EBUSY) or asyncpg locally.
@@ -451,6 +498,8 @@ async def diag():
         "psycopg3_internals": psycopg3_internals,
         "nb_socket_probe": nb_socket_probe,
         "direct_psycopg3_probe": direct_psycopg3_probe,
+        "custom_thread_psycopg3_probe": custom_thread_psycopg3_probe,
+        "sa_connect_args_probe": sa_connect_args_probe,
         "db_probe": db_probe,
         "python_version": sys.version,
         "event_loop": loop_type,
