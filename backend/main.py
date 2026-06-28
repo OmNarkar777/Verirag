@@ -273,6 +273,32 @@ async def diag():
     except Exception:
         db_url_host = "parse error"
 
+    # Raw TCP connectivity test — no asyncpg, no SSL, no SQLAlchemy.
+    # Tells us if Vercel can reach the Supabase host at all.
+    tcp_probe = "skipped"
+    if db_url_raw:
+        try:
+            from urllib.parse import urlparse as _urlparse
+            _p = _urlparse(db_url_raw)
+            _host, _port = _p.hostname, _p.port or 5432
+            import asyncio as _aio
+            reader, writer = await _aio.wait_for(
+                _aio.open_connection(_host, _port),
+                timeout=10.0,
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            tcp_probe = f"TCP {_host}:{_port} → CONNECTED (port is reachable)"
+        except _aio.TimeoutError:
+            tcp_probe = f"TCP TIMEOUT — port {_port} is blocked/filtered by Vercel egress"
+        except ConnectionRefusedError as e:
+            tcp_probe = f"TCP REFUSED — host reachable but port blocked: {e}"
+        except Exception as e:
+            tcp_probe = f"TCP {type(e).__name__}: {e}"
+
     # Live DB probe — full traceback on failure
     db_probe = "skipped"
     if db_url_raw and _settings:
@@ -303,6 +329,7 @@ async def diag():
         "boot_error": _BOOT_ERROR,
         "env": env_snapshot,
         "db_url_host": db_url_host,
+        "tcp_probe": tcp_probe,
         "db_probe": db_probe,
         "python_version": sys.version,
         "event_loop": loop_type,
