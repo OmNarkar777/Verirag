@@ -130,10 +130,14 @@ export default function QueryPanel({ onEvalCase }) {
               </div>
             </div>
 
-            {result.confidence === 'low' && (
+            {result.confidence === 'low' && result.retrieved_chunks.length === 0 && (
               <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-400">
-                Low retrieval confidence — the indexed documents may not fully cover this topic.
-                Consider uploading more relevant documents.
+                No documents indexed yet. Upload documents first, or try the pre-loaded AI/ML topics.
+              </div>
+            )}
+            {result.confidence === 'low' && result.retrieved_chunks.length > 0 && (
+              <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-400">
+                Low retrieval score — the indexed documents may not fully cover this topic.
               </div>
             )}
 

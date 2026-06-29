@@ -14,22 +14,23 @@ from backend.rag.retriever import RAGRetriever
 
 settings = get_settings()
 
-# Minimum similarity score for a chunk to be included in context.
-# Chunks below this threshold are too dissimilar to the query to be useful
-# and risk grounding the answer in irrelevant content.
-_MIN_CHUNK_SCORE = 0.10
+# Confidence thresholds calibrated for TF-IDF hash embeddings.
+# TF-IDF cosine scores range roughly -0.5 to +0.5 (vs 0.3–0.95 for semantic).
+# We never block retrieval based on score — only classify confidence level.
+_CONF_HIGH   = 0.20   # top chunk score >= this → high
+_CONF_MEDIUM = 0.0    # top chunk score >= this → medium (including slightly negative)
 
-RAG_SYSTEM_PROMPT = """You are a precise, trustworthy AI assistant. Your answers must be \
-strictly grounded in the provided context passages.
 
-Rules:
-1. Answer only from the context below. Never use external or prior knowledge.
-2. If the context is insufficient, say exactly: "I don't have enough context to answer this question."
-3. When you answer, cite the source document name in brackets, e.g. [attention-is-all-you-need.txt].
-4. Be concise and direct. Do not repeat the question.
-5. If the question is partially answerable, answer what you can and note what is missing.
+RAG_SYSTEM_PROMPT = """You are a trustworthy AI assistant that answers questions strictly from the provided context.
 
-Context passages (ordered by relevance):
+RULES:
+1. Base your answer ONLY on the context passages below.
+2. Cite the source in brackets after each key point, e.g. [source: attention-is-all-you-need.txt].
+3. If the context contains a partial answer, give the partial answer and state what is missing.
+4. Only say "I cannot find this in the provided documents" if the context is completely unrelated to the question.
+5. Be concise and direct.
+
+Context passages:
 {context}"""
 
 RAG_HUMAN_PROMPT = "Question: {question}"
@@ -37,33 +38,38 @@ RAG_HUMAN_PROMPT = "Question: {question}"
 
 def _build_context(chunks: list[dict]) -> tuple[str, float]:
     """
-    Build the context string from retrieved chunks and compute a confidence score.
-
-    Confidence is derived from the top chunk's similarity score:
-    - >= 0.70  high   (strong semantic match)
-    - >= 0.40  medium (partial match)
-    - <  0.40  low    (weak match — answer may be unreliable)
+    Build context string from retrieved chunks.
 
     Returns (context_str, top_score).
+    - Never filters chunks by score; the retriever already applies MMR ranking.
+    - Includes ALL returned chunks so the LLM has maximum grounding.
+    - top_score is used only for the confidence badge in the UI.
     """
-    filtered = [c for c in chunks if c.get("score", 0) >= _MIN_CHUNK_SCORE]
-    if not filtered:
+    if not chunks:
         return "", 0.0
 
     parts = []
-    for i, c in enumerate(filtered):
-        score_pct = int(c["score"] * 100)
+    for i, c in enumerate(chunks):
+        score_pct = max(0, int(c.get("score", 0) * 100))
         parts.append(
-            f"[Passage {i+1} | source: {c['source']} | relevance: {score_pct}%]\n{c['content']}"
+            f"[Passage {i + 1} | source: {c['source']} | relevance: {score_pct}%]\n{c['content']}"
         )
 
-    return "\n\n---\n\n".join(parts), filtered[0]["score"]
+    top_score = chunks[0].get("score", 0.0)
+    return "\n\n---\n\n".join(parts), top_score
 
 
-def _confidence_label(top_score: float) -> str:
-    if top_score >= 0.70:
+def _confidence_label(top_score: float, chunk_count: int) -> str:
+    """
+    Confidence label based on retrieval score and chunk count.
+
+    Calibrated for TF-IDF hash embeddings (score range ~ -0.5 to +0.5).
+    """
+    if chunk_count == 0:
+        return "low"
+    if top_score >= _CONF_HIGH:
         return "high"
-    if top_score >= 0.40:
+    if top_score >= _CONF_MEDIUM:
         return "medium"
     return "low"
 
@@ -124,19 +130,19 @@ class RAGPipeline:
                 "confidence": "low",
             }
 
-        context_str, top_score = _build_context(chunks)
-
-        if not context_str:
-            logger.warning("No usable chunks retrieved (all below threshold or empty)")
+        if not chunks:
+            logger.warning("No chunks retrieved from vector store")
             return {
                 "question": question,
-                "answer": "I don't have enough context to answer this question. Try uploading relevant documents first.",
-                "retrieved_chunks": chunks,
+                "answer": "No documents are indexed yet. Please upload documents first, or ask about AI/ML topics using the pre-loaded documents.",
+                "retrieved_chunks": [],
                 "model_used": settings.groq_model,
                 "confidence": "low",
             }
 
-        confidence = _confidence_label(top_score)
+        context_str, top_score = _build_context(chunks)
+        confidence = _confidence_label(top_score, len(chunks))
+
         answer = self.chain.invoke({"context": context_str, "question": question})
 
         logger.info(

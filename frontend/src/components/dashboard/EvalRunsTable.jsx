@@ -51,7 +51,11 @@ function SkeletonRow() {
 
 export default function EvalRunsTable({ runs = [], loading = false, onRunSample }) {
   const [deleting, setDeleting] = useState(null)
+  const [showFailed, setShowFailed] = useState(false)
   const deleteMutation = useDeleteEvalRun()
+
+  const failedCount = runs.filter((r) => r.status === 'failed').length
+  const visibleRuns = showFailed ? runs : runs.filter((r) => r.status !== 'failed')
 
   const handleDelete = async (runId) => {
     if (!confirm('Delete this eval run and all its case results?')) return
@@ -68,12 +72,22 @@ export default function EvalRunsTable({ runs = [], loading = false, onRunSample 
       {/* Table header */}
       <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-200">Evaluation Runs</h2>
-        <button
-          onClick={onRunSample}
-          className="text-xs bg-brand-500 hover:bg-brand-600 text-white px-3 py-1.5 rounded-lg font-medium transition-colors"
-        >
-          + Run Sample Eval
-        </button>
+        <div className="flex items-center gap-3">
+          {failedCount > 0 && (
+            <button
+              onClick={() => setShowFailed((v) => !v)}
+              className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+            >
+              {showFailed ? `Hide ${failedCount} failed` : `Show ${failedCount} failed`}
+            </button>
+          )}
+          <button
+            onClick={onRunSample}
+            className="text-xs bg-brand-500 hover:bg-brand-600 text-white px-3 py-1.5 rounded-lg font-medium transition-colors"
+          >
+            + Run Sample Eval
+          </button>
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -88,7 +102,7 @@ export default function EvalRunsTable({ runs = [], loading = false, onRunSample 
           <tbody>
             {loading && [...Array(5)].map((_, i) => <SkeletonRow key={i} />)}
 
-            {!loading && runs.length === 0 && (
+            {!loading && visibleRuns.length === 0 && (
               <tr>
                 <td colSpan={10} className="px-4 py-12 text-center text-slate-600 text-sm">
                   No evaluation runs yet.{' '}
@@ -100,7 +114,7 @@ export default function EvalRunsTable({ runs = [], loading = false, onRunSample 
               </tr>
             )}
 
-            {!loading && runs.map((run) => (
+            {!loading && visibleRuns.map((run) => (
               <tr
                 key={run.id}
                 className={clsx(

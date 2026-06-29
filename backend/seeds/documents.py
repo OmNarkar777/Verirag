@@ -610,13 +610,28 @@ Decomposes the ground truth answer into claims and checks what fraction of those
 def seed_demo_documents() -> None:
     """
     Ingest demo documents into the vector store.
-    Skips documents already present (idempotent via doc_id check).
+
+    Fast-path: if the collection already has >= 50 chunks, all 12 demo docs
+    are already indexed — skip the per-document existence checks (saves 12
+    DB round-trips on every cold start).
     """
     from backend.rag.vectorstore import get_vector_store
     from backend.config import get_settings
 
     settings = get_settings()
     vs = get_vector_store()
+
+    # Fast bulk check: if sufficient chunks already exist, skip entirely.
+    try:
+        stats = vs.get_collection_stats(settings.chroma_collection_name)
+        if stats.get("document_count", 0) >= 50:
+            logger.info(
+                f"Demo documents: skipped (collection already has "
+                f"{stats['document_count']} chunks)"
+            )
+            return
+    except Exception:
+        pass
 
     ingested = 0
     skipped = 0
@@ -626,7 +641,6 @@ def seed_demo_documents() -> None:
         text = doc["text"]
         doc_id = hashlib.sha256(f"{filename}:{text[:100]}".encode()).hexdigest()[:16]
 
-        # Check if already ingested
         try:
             if vs.doc_exists(doc_id, settings.chroma_collection_name):
                 skipped += 1

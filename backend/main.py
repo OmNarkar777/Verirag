@@ -122,34 +122,22 @@ async def lifespan(application: FastAPI):
     except Exception:
         pass
 
-    # Warm up singletons — failures are non-fatal
-    try:
-        from backend.rag.vectorstore import get_vector_store
-        get_vector_store()
-        logger.info("VectorStore initialized")
-    except Exception as e:
-        logger.error(f"VectorStore init failed (non-fatal): {e}")
+    # Warm up singletons in parallel — failures are non-fatal.
+    # VectorStore must finish before RAGPipeline (pipeline calls get_vector_store inside __init__).
+    # Schema creation runs concurrently with vectorstore warm-up since they're independent.
+    async def _init_vectorstore():
+        try:
+            from backend.rag.vectorstore import get_vector_store
+            get_vector_store()
+            logger.info("VectorStore initialized")
+        except Exception as e:
+            logger.error(f"VectorStore init failed (non-fatal): {e}")
 
-    try:
-        from backend.rag.pipeline import get_pipeline
-        get_pipeline()
-        logger.info("RAG pipeline initialized")
-    except Exception as e:
-        logger.error(f"RAG pipeline init failed (non-fatal): {e}")
-
-    try:
-        from backend.evaluator.ragas_runner import get_ragas_runner
-        get_ragas_runner()
-        logger.info("RAGAS runner initialized")
-    except Exception as e:
-        logger.error(f"RAGAS runner init failed (non-fatal): {e}")
-
-    # Create tables then verify connectivity (both non-fatal)
-    if s.database_url:
+    async def _init_schema():
+        if not s.database_url:
+            return
         try:
             if _IS_VERCEL:
-                # asyncpg EBUSY on Vercel: use sync psycopg3 via to_thread.
-                # create_all_sync() uses libpq (C), no asyncio, no uvloop → works.
                 from backend.database import create_all_sync
                 await asyncio.to_thread(create_all_sync)
             else:
@@ -161,6 +149,21 @@ async def lifespan(application: FastAPI):
         except Exception as e:
             logger.error(f"Schema creation failed (non-fatal): {e}")
 
+    # Run vectorstore init and schema creation concurrently.
+    await asyncio.gather(_init_vectorstore(), _init_schema())
+
+    # RAGPipeline depends on vectorstore singleton (already set above).
+    try:
+        from backend.rag.pipeline import get_pipeline
+        get_pipeline()
+        logger.info("RAG pipeline initialized")
+    except Exception as e:
+        logger.error(f"RAG pipeline init failed (non-fatal): {e}")
+
+    # RagasRunner is lazy — only warm it up if DB is available.
+    # Skip at cold start to save ~0.5s; first eval request initializes it.
+
+    if s.database_url:
         try:
             async with get_db_context() as db:
                 await db.execute(text("SELECT 1"))
@@ -168,7 +171,9 @@ async def lifespan(application: FastAPI):
         except Exception as e:
             logger.error(f"Database connection failed (non-fatal): {e}")
 
-        # Seed realistic sample data on first boot (idempotent)
+        # Seed realistic sample data on first boot (idempotent).
+        # seed_demo_documents() uses a single bulk stats check to skip quickly
+        # when already seeded (avoids 12 per-document DB round-trips per cold start).
         try:
             from backend.seeds import seed_all_sync
             await asyncio.to_thread(seed_all_sync)
