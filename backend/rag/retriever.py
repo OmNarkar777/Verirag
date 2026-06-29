@@ -37,25 +37,33 @@ class RAGRetriever:
         collection_name: str | None = None,
         top_k: int | None = None,
         use_mmr: bool = True,
+        fetch_k: int = 20,
+        mmr_lambda: float | None = None,
     ) -> list[dict]:
         """
         Retrieve relevant chunks for a query.
-        
+
         Returns list of {content, source, score, metadata} dicts.
-        
+
         WHY MMR BY DEFAULT:
         In RAGAS eval, context_precision measures whether the retrieved chunks
         are USEFUL for generating the correct answer. With vanilla similarity
         search, if the top-5 chunks are near-duplicates, the LLM gets
         redundant info — hurting both faithfulness and context_precision.
         MMR diversifies the retrieved set, giving the LLM more signal.
+
+        fetch_k and mmr_lambda allow UI-driven experimentation:
+        - fetch_k: larger pool → more diverse candidates (default 20)
+        - mmr_lambda: 1.0 = pure relevance, 0.0 = pure diversity (default 0.5)
         """
         collection_name = collection_name or settings.chroma_collection_name
         top_k = top_k or settings.retrieval_top_k
+        if mmr_lambda is None:
+            mmr_lambda = settings.retrieval_lambda
 
         logger.debug(
-            f"Retrieving chunks | query_len={len(query)} | "
-            f"top_k={top_k} | mmr={use_mmr} | collection={collection_name}"
+            f"Retrieving | top_k={top_k} | mmr={use_mmr} | "
+            f"fetch_k={fetch_k} | lambda={mmr_lambda:.2f}"
         )
 
         if use_mmr:
@@ -63,6 +71,8 @@ class RAGRetriever:
                 query=query,
                 collection_name=collection_name,
                 top_k=top_k,
+                fetch_k=fetch_k,
+                lambda_mult=mmr_lambda,
             )
         else:
             chunks = self.vector_store.similarity_search(

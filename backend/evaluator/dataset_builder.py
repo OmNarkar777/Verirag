@@ -18,8 +18,6 @@ all 4 RAGAS metrics with varying difficulty:
 - Ground truths are intentionally longer than answers (tests recall vs precision tradeoff)
 """
 
-from datasets import Dataset
-from langchain_groq import ChatGroq
 from loguru import logger
 
 from backend.config import get_settings
@@ -203,28 +201,31 @@ def get_sample_test_cases() -> list[TestCaseInput]:
     return [TestCaseInput(**case) for case in SAMPLE_TEST_CASES]
 
 
-def build_ragas_dataset(test_cases: list[TestCaseInput]) -> Dataset:
+def build_ragas_dataset(test_cases: list[TestCaseInput]) -> dict:
     """
-    Convert TestCaseInput list to RAGAS-compatible HuggingFace Dataset.
-    
-    RAGAS evaluate() requires these exact column names:
-    - "question": the question string
-    - "answer": the generated answer string
-    - "contexts": list of retrieved context strings
-    - "ground_truth": reference answer string
-    
-    Any missing column will silently skip the metric that needs it.
+    Convert TestCaseInput list to a plain dict with RAGAS column names.
+    Lazy-imports the `datasets` library so the module can be imported
+    without it being installed (reduces cold-start import chain).
     """
-    data = {
-        "question": [tc.question for tc in test_cases],
-        "answer": [tc.answer for tc in test_cases],
-        "contexts": [tc.contexts for tc in test_cases],
-        "ground_truth": [tc.ground_truth for tc in test_cases],
-    }
-
-    dataset = Dataset.from_dict(data)
-    logger.info(f"Built RAGAS dataset | rows={len(dataset)}")
-    return dataset
+    try:
+        from datasets import Dataset
+        data = {
+            "question": [tc.question for tc in test_cases],
+            "answer": [tc.answer for tc in test_cases],
+            "contexts": [tc.contexts for tc in test_cases],
+            "ground_truth": [tc.ground_truth for tc in test_cases],
+        }
+        dataset = Dataset.from_dict(data)
+        logger.info(f"Built RAGAS dataset | rows={len(dataset)}")
+        return dataset
+    except ImportError:
+        logger.warning("datasets library not available; returning plain dict")
+        return {
+            "question": [tc.question for tc in test_cases],
+            "answer": [tc.answer for tc in test_cases],
+            "contexts": [tc.contexts for tc in test_cases],
+            "ground_truth": [tc.ground_truth for tc in test_cases],
+        }
 
 
 async def generate_synthetic_test_cases(
@@ -242,10 +243,11 @@ async def generate_synthetic_test_cases(
     NOTE: Synthetic evals are noisier than human-curated ones.
     Use them for regression detection, not ground-truth benchmarking.
     """
+    from langchain_groq import ChatGroq
     llm = ChatGroq(
         api_key=settings.groq_api_key,
         model=settings.groq_model,
-        temperature=0.7,  # some creativity for diverse questions
+        temperature=0.7,
     )
 
     from langchain_core.prompts import ChatPromptTemplate

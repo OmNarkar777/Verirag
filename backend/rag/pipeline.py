@@ -107,18 +107,26 @@ class RAGPipeline:
         question: str,
         collection_name: Optional[str] = None,
         top_k: Optional[int] = None,
+        use_mmr: bool = True,
+        fetch_k: int = 20,
+        mmr_lambda: Optional[float] = None,
     ) -> dict:
         """
         Returns dict with keys:
           question, answer, retrieved_chunks, model_used, confidence
         """
-        logger.info(f"RAG query | question={question[:80]}")
+        logger.info(
+            f"RAG query | question={question[:80]} | "
+            f"top_k={top_k or 'default'} | mmr={use_mmr}"
+        )
 
         chunks = self.retriever.retrieve(
             query=question,
             collection_name=collection_name,
             top_k=top_k,
-            use_mmr=True,
+            use_mmr=use_mmr,
+            fetch_k=fetch_k,
+            mmr_lambda=mmr_lambda,
         )
 
         if not self.chain:

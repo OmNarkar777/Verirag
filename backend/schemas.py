@@ -79,6 +79,11 @@ class QueryRequest(BaseModel):
     question: str = Field(..., min_length=5)
     top_k: int = Field(default=5, ge=1, le=20)
     collection_name: str | None = None
+    # Retrieval experiment parameters — allow UI-driven experimentation
+    # without code changes. These override the pipeline defaults.
+    use_mmr: bool = Field(default=True, description="MMR retrieval (True) vs cosine similarity (False)")
+    fetch_k: int = Field(default=20, ge=5, le=100, description="Candidate pool size for MMR")
+    mmr_lambda: float = Field(default=0.5, ge=0.0, le=1.0, description="MMR relevance weight (1.0=pure relevance, 0.0=pure diversity)")
 
 
 class RetrievedChunk(BaseModel):

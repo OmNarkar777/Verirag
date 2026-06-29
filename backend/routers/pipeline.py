@@ -200,6 +200,9 @@ async def query_pipeline(
             question=request.question,
             collection_name=request.collection_name,
             top_k=request.top_k,
+            use_mmr=request.use_mmr,
+            fetch_k=request.fetch_k,
+            mmr_lambda=request.mmr_lambda,
         )
 
         chunks = [

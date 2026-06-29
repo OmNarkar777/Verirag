@@ -67,8 +67,14 @@ export const ingestText = (text, filename) => {
   }).then((r) => r.data)
 }
 
-export const queryPipeline = (question, topK = 5) =>
-  api.post('/pipeline/query', { question, top_k: topK }).then((r) => r.data)
+export const queryPipeline = (question, { topK = 5, useMmr = true, fetchK = 20, mmrLambda = 0.5 } = {}) =>
+  api.post('/pipeline/query', {
+    question,
+    top_k: topK,
+    use_mmr: useMmr,
+    fetch_k: fetchK,
+    mmr_lambda: mmrLambda,
+  }).then((r) => r.data)
 
 export const getPipelineStats = () =>
   api.get('/pipeline/stats').then((r) => r.data)

@@ -44,6 +44,7 @@ export function useIngestText() {
 
 export function useQueryPipeline() {
   return useMutation({
-    mutationFn: ({ question, topK }) => queryPipeline(question, topK),
+    mutationFn: ({ question, topK, useMmr, fetchK, mmrLambda }) =>
+      queryPipeline(question, { topK, useMmr, fetchK, mmrLambda }),
   })
 }

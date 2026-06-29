@@ -1,66 +1,22 @@
 """
 evaluator/metrics.py — RAGAS metric definitions, thresholds, and interpretations.
 
-WHY THIS FILE EXISTS:
-Instead of scattering metric config across the codebase, we centralize:
-1. Which RAGAS metrics to run (some are expensive — context_recall calls LLM twice)
-2. Thresholds for pass/fail classification (used in dashboards + alerting)
-3. Human-readable explanations (for API responses and reports)
-
-RAGAS METRIC PRIMER (what interviewers actually want you to understand):
-
-FAITHFULNESS (0-1):
-  "Does the answer contain ONLY information present in the retrieved context?"
-  Calculated by: LLM decomposes answer into atomic claims, then judges each
-  claim as supported/unsupported by context. Score = supported_claims / total_claims.
-  Common failure: LLM uses parametric knowledge instead of retrieved context.
-  Fix: stronger system prompt, better context coverage.
-
-ANSWER RELEVANCY (0-1):
-  "Does the answer actually address the question asked?"
-  Calculated by: LLM generates N reverse questions from the answer, then
-  measures cosine similarity between original question and reverse questions.
-  Common failure: answer is factually correct but off-topic.
-  Fix: better retrieval (getting relevant chunks), prompt improvements.
-
-CONTEXT PRECISION (0-1):
-  "Are the USEFUL chunks ranked HIGHER in the retrieved list?"
-  Calculated by: for each retrieved chunk, LLM judges if it was needed for
-  the answer. Then measures ranking quality (useful chunks should be rank 1,2,3...).
-  Common failure: retriever returns many irrelevant chunks mixed with good ones.
-  Fix: better embedding model, re-ranking, MMR.
-
-CONTEXT RECALL (0-1):
-  "Does the retrieved context COVER everything in the ground truth?"
-  Calculated by: LLM decomposes ground truth into sentences, judges each as
-  supported/unsupported by retrieved context. Score = supported / total.
-  Common failure: retrieved chunks miss key information from the corpus.
-  Fix: larger top_k, better chunking strategy, hybrid search.
+Centralizes metric config: thresholds, classifications, human-readable explanations.
+RAGAS metric objects are guarded behind a lazy import — RAGAS uses asyncio.get_event_loop()
+in thread pool workers which raises RuntimeError on Python 3.12.
+Evaluation scoring uses direct Groq LLM calls (see routers/eval.py).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ragas.metrics import (
-    AnswerRelevancy,
-    ContextPrecision,
-    ContextRecall,
-    Faithfulness,
-)
-
 
 @dataclass
 class MetricThreshold:
-    """
-    Pass/fail thresholds for each RAGAS metric.
-    
-    These are domain-dependent — a customer service bot needs higher faithfulness
-    (never hallucinate policy info) than a creative writing assistant.
-    Values here are reasonable defaults for a general-purpose RAG system.
-    """
+    """Pass/fail thresholds for each RAGAS metric."""
     metric_name: str
-    warning_threshold: float   # Below this: flag as warning
-    failure_threshold: float   # Below this: flag as failure
+    warning_threshold: float
+    failure_threshold: float
     description: str
 
 
@@ -104,48 +60,24 @@ METRIC_THRESHOLDS: dict[str, MetricThreshold] = {
 }
 
 
-def get_ragas_metrics() -> list:
-    """
-    Returns RAGAS metric instances configured for our eval pipeline.
-    
-    NOTE: RAGAS metrics are stateful objects that hold the LLM reference.
-    We set the LLM on them in ragas_runner.py (after settings are loaded),
-    not here — this function just defines WHICH metrics to run.
-    """
-    return [
-        Faithfulness(),
-        AnswerRelevancy(),
-        ContextPrecision(),
-        ContextRecall(),
-    ]
-
-
 def classify_score(metric_name: str, score: float) -> str:
-    """
-    Returns "pass" | "warning" | "fail" for a given metric score.
-    Used for dashboard color coding and alerting.
-    """
+    """Returns 'pass' | 'warning' | 'fail' for a given metric score."""
     threshold = METRIC_THRESHOLDS.get(metric_name)
     if not threshold:
         return "unknown"
-
     if score >= threshold.warning_threshold:
         return "pass"
     elif score >= threshold.failure_threshold:
         return "warning"
-    else:
-        return "fail"
+    return "fail"
 
 
 def score_summary(scores: dict[str, float | None]) -> dict[str, dict]:
     """
-    Returns enriched score dict with classifications.
-    
-    Input: {"faithfulness": 0.85, "answer_relevancy": 0.72, ...}
-    Output: {
-        "faithfulness": {"score": 0.85, "status": "pass", "description": "..."},
-        ...
-    }
+    Returns enriched score dict with status classifications.
+
+    Input:  {"faithfulness": 0.85, "answer_relevancy": 0.72, ...}
+    Output: {"faithfulness": {"score": 0.85, "status": "pass", "description": "..."}, ...}
     """
     summary = {}
     for metric_name, score in scores.items():

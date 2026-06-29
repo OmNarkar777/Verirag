@@ -1,5 +1,12 @@
 /**
- * QueryPanel — interactive RAG query interface with confidence display.
+ * QueryPanel — RAG query interface with Experiment Mode controls.
+ *
+ * Experiment Mode lets engineers change retrieval parameters without code changes:
+ * - Top-K: number of chunks returned to the LLM
+ * - MMR toggle: Maximal Marginal Relevance vs cosine similarity
+ * - fetch_k: candidate pool size for MMR (larger = more diverse candidates)
+ * - MMR lambda: 1.0 = pure relevance, 0.0 = pure diversity
+ * Each query includes its retrieval config in the response for traceability.
  */
 import { useState } from 'react'
 import clsx from 'clsx'
@@ -28,14 +35,139 @@ function ConfidenceBadge({ confidence }) {
   )
 }
 
+function ExperimentControls({ topK, setTopK, useMmr, setUseMmr, fetchK, setFetchK, mmrLambda, setMmrLambda }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="border border-slate-800 rounded-lg">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs text-slate-500 hover:text-slate-400 transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          <svg className="w-3.5 h-3.5 text-brand-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M2 4h12M4 8h8M6 12h4" strokeLinecap="round"/>
+          </svg>
+          <span className="font-medium">Experiment Mode</span>
+          {/* live summary of non-default values */}
+          <span className="text-slate-700">
+            top_k={topK} · {useMmr ? `MMR (λ={mmrLambda}, pool={fetchK})` : 'cosine'}
+          </span>
+        </span>
+        <svg className={clsx('w-3.5 h-3.5 transition-transform', open && 'rotate-180')} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-800 px-3 py-3 space-y-4">
+          <p className="text-xs text-slate-600">
+            Change retrieval parameters per-query without modifying code.
+            Each result reflects these exact settings — use this to run controlled experiments.
+          </p>
+
+          <div className="grid grid-cols-2 gap-4">
+            {/* Top-K */}
+            <div>
+              <label className="text-xs text-slate-500 block mb-1.5">
+                Top-K <span className="text-slate-700">— chunks sent to LLM</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range" min={1} max={20} step={1} value={topK}
+                  onChange={(e) => setTopK(Number(e.target.value))}
+                  className="flex-1 accent-brand-500"
+                />
+                <span className="text-xs text-slate-300 font-mono w-6 text-right">{topK}</span>
+              </div>
+            </div>
+
+            {/* Retrieval strategy */}
+            <div>
+              <label className="text-xs text-slate-500 block mb-1.5">Retrieval Strategy</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setUseMmr(true)}
+                  className={clsx(
+                    'flex-1 py-1 rounded text-xs font-medium border transition-colors',
+                    useMmr
+                      ? 'bg-brand-500/20 border-brand-500/50 text-brand-300'
+                      : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-400'
+                  )}
+                >
+                  MMR
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUseMmr(false)}
+                  className={clsx(
+                    'flex-1 py-1 rounded text-xs font-medium border transition-colors',
+                    !useMmr
+                      ? 'bg-brand-500/20 border-brand-500/50 text-brand-300'
+                      : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-400'
+                  )}
+                >
+                  Cosine
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {useMmr && (
+            <div className="grid grid-cols-2 gap-4">
+              {/* MMR Lambda */}
+              <div>
+                <label className="text-xs text-slate-500 block mb-1.5">
+                  MMR Lambda (λ={mmrLambda})
+                  <span className="text-slate-700 ml-1">— 1.0=relevance, 0.0=diversity</span>
+                </label>
+                <input
+                  type="range" min={0} max={1} step={0.05} value={mmrLambda}
+                  onChange={(e) => setMmrLambda(Number(e.target.value))}
+                  className="w-full accent-brand-500"
+                />
+                <div className="flex justify-between text-xs text-slate-700 mt-0.5">
+                  <span>max diversity</span>
+                  <span>max relevance</span>
+                </div>
+              </div>
+
+              {/* fetch_k */}
+              <div>
+                <label className="text-xs text-slate-500 block mb-1.5">
+                  Candidate Pool (fetch_k={fetchK})
+                  <span className="text-slate-700 ml-1">— larger = better MMR diversity</span>
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range" min={5} max={100} step={5} value={fetchK}
+                    onChange={(e) => setFetchK(Number(e.target.value))}
+                    className="flex-1 accent-brand-500"
+                  />
+                  <span className="text-xs text-slate-300 font-mono w-8 text-right">{fetchK}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function QueryPanel({ onEvalCase }) {
   const [question, setQuestion] = useState('')
   const [topK, setTopK] = useState(5)
+  const [useMmr, setUseMmr] = useState(true)
+  const [fetchK, setFetchK] = useState(20)
+  const [mmrLambda, setMmrLambda] = useState(0.5)
   const queryMutation = useQueryPipeline()
 
   const handleQuery = () => {
     if (!question.trim()) return
-    queryMutation.mutate({ question: question.trim(), topK })
+    queryMutation.mutate({ question: question.trim(), topK, useMmr, fetchK, mmrLambda })
   }
 
   const result = queryMutation.data
@@ -62,20 +194,15 @@ export default function QueryPanel({ onEvalCase }) {
           className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-brand-500 resize-none"
         />
 
+        <ExperimentControls
+          topK={topK} setTopK={setTopK}
+          useMmr={useMmr} setUseMmr={setUseMmr}
+          fetchK={fetchK} setFetchK={setFetchK}
+          mmrLambda={mmrLambda} setMmrLambda={setMmrLambda}
+        />
+
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 text-xs text-slate-500">
-            <div className="flex items-center gap-1.5">
-              <span>Top-K:</span>
-              <select
-                value={topK}
-                onChange={(e) => setTopK(Number(e.target.value))}
-                className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-slate-300 focus:outline-none text-xs"
-              >
-                {[3, 5, 8, 10].map((k) => <option key={k} value={k}>{k}</option>)}
-              </select>
-            </div>
-            <span className="text-slate-700">⌘↵ to submit</span>
-          </div>
+          <span className="text-xs text-slate-600">⌘↵ to submit</span>
           <button
             onClick={handleQuery}
             disabled={!question.trim() || queryMutation.isPending}
@@ -128,6 +255,16 @@ export default function QueryPanel({ onEvalCase }) {
                   </button>
                 )}
               </div>
+            </div>
+
+            {/* Experiment config used for this result */}
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              <span className="text-xs bg-slate-800 border border-slate-700 text-slate-500 px-2 py-0.5 rounded font-mono">
+                top_k={topK}
+              </span>
+              <span className="text-xs bg-slate-800 border border-slate-700 text-slate-500 px-2 py-0.5 rounded font-mono">
+                {useMmr ? `MMR λ=${mmrLambda} pool=${fetchK}` : 'cosine'}
+              </span>
             </div>
 
             {result.confidence === 'low' && result.retrieved_chunks.length === 0 && (
