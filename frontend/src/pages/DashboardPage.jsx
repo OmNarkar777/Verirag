@@ -1,15 +1,17 @@
 /**
  * DashboardPage — metric overview, trend chart, regression alerts, run history.
- * Serves as the hub for the RAG optimization workflow:
- *   Run → Evaluate → Compare → Optimize → Re-run
+ *
+ * Performance: uses /eval/dashboard (combined endpoint) — one DB round trip
+ * instead of two. Module-level cache on backend means warm requests return
+ * in <100ms. All sections render skeletons immediately; nothing blocks on data.
  */
 import { useState } from 'react'
 import clsx from 'clsx'
-import { useEvalRuns, useStartSampleEval } from '../hooks/useEvalRuns.js'
+import { useDashboard, useStartSampleEval, DASHBOARD_KEY } from '../hooks/useEvalRuns.js'
+import { useQueryClient } from '@tanstack/react-query'
 import MetricCard from '../components/dashboard/MetricCard.jsx'
 import MetricTrendChart from '../components/dashboard/MetricTrendChart.jsx'
 import EvalRunsTable from '../components/dashboard/EvalRunsTable.jsx'
-import RegressionAlert from '../components/dashboard/RegressionAlert.jsx'
 import { scoreColorClass, fmtScore } from '../utils/scoreColor.js'
 
 const METRICS = ['faithfulness', 'answer_relevancy', 'context_precision', 'context_recall']
@@ -41,20 +43,6 @@ function ApiErrorBanner({ message }) {
   )
 }
 
-function StatPill({ label, value, highlight }) {
-  return (
-    <div className={clsx(
-      'flex items-center gap-1.5 text-xs rounded-full px-3 py-1 border',
-      highlight
-        ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300'
-        : 'bg-slate-800 border-slate-700 text-slate-400',
-    )}>
-      <span className="text-slate-500">{label}:</span>
-      <span className="font-semibold">{value}</span>
-    </div>
-  )
-}
-
 function MetricTooltip({ metric }) {
   const [show, setShow] = useState(false)
   const desc = METRIC_DESCRIPTIONS[metric]
@@ -73,42 +61,6 @@ function MetricTooltip({ metric }) {
           {desc}
         </div>
       )}
-    </div>
-  )
-}
-
-function ProductHeroBanner({ latestRun, totalRuns, avgFaithfulness }) {
-  return (
-    <div className="glass rounded-xl p-6 border-brand-500/10 bg-gradient-to-br from-slate-900/80 to-brand-500/5">
-      <div className="flex items-start justify-between gap-6">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-medium text-brand-400 uppercase tracking-widest">RAG Evaluation Platform</span>
-          </div>
-          <h2 className="text-lg font-bold text-slate-100 mb-2">
-            Continuous quality measurement for RAG pipelines
-          </h2>
-          <p className="text-sm text-slate-400 max-w-xl leading-relaxed">
-            VeriRAG measures{' '}
-            <a href="https://docs.ragas.io" target="_blank" rel="noreferrer" className="text-brand-400 hover:text-brand-300">
-              RAGAS
-            </a>{' '}
-            metrics across pipeline versions — faithfulness, answer relevancy,
-            context precision, and recall. Regressions are automatically detected
-            and surfaced. Optimization recommendations explain why each metric changed.
-          </p>
-          <div className="flex flex-wrap items-center gap-3 mt-4">
-            <StatPill label="Eval runs" value={totalRuns} />
-            <StatPill
-              label="Avg faithfulness"
-              value={avgFaithfulness != null ? `${(avgFaithfulness * 100).toFixed(1)}%` : '—'}
-              highlight={avgFaithfulness > 0.85}
-            />
-            <StatPill label="Pipeline" value="llama-3.3-70b / MMR" />
-            <StatPill label="Embeddings" value="all-MiniLM-L6-v2" />
-          </div>
-        </div>
-      </div>
     </div>
   )
 }
@@ -156,6 +108,46 @@ function BestPipelineBanner({ runs }) {
   )
 }
 
+function RegressionBanner({ regression }) {
+  if (!regression) return null
+  const flaggedMetrics = Object.entries(regression.regression_details || {})
+    .filter(([, v]) => v?.is_regression)
+  if (flaggedMetrics.length === 0) return null
+
+  return (
+    <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 w-5 h-5 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center shrink-0">
+          <span className="text-red-400 text-xs">!</span>
+        </div>
+        <div className="flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-semibold text-red-300">
+              Regression detected in {regression.version_tag}
+            </p>
+            <a href={`/runs/${regression.id}`} className="text-xs text-red-400/70 hover:text-red-300 underline underline-offset-2">
+              View run →
+            </a>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-3">
+            {flaggedMetrics.map(([metric, details]) => (
+              <div key={metric} className="text-xs bg-red-900/30 border border-red-500/20 rounded-lg px-3 py-1.5">
+                <span className="text-red-300 font-medium">{METRIC_LABELS[metric]}</span>
+                <span className="text-slate-400 mx-1">
+                  {fmtScore(details.previous)} → {fmtScore(details.current)}
+                </span>
+                <span className="text-red-400 font-semibold">
+                  ({(details.delta * 100).toFixed(1)}%)
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function RunComparisonPanel({ runA, runB, onClose }) {
   if (!runA || !runB) return null
 
@@ -163,10 +155,7 @@ function RunComparisonPanel({ runA, runB, onClose }) {
     <div className="glass rounded-xl p-5">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-semibold text-slate-200">Run Comparison</h2>
-        <button
-          onClick={onClose}
-          className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-        >
+        <button onClick={onClose} className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
           Clear
         </button>
       </div>
@@ -212,20 +201,13 @@ function RunComparisonPanel({ runA, runB, onClose }) {
             })}
             <tr>
               <td className="pt-2.5 pr-4 text-xs text-slate-500 font-medium">Avg Score</td>
-              <td className="pt-2.5 px-4 text-right font-mono text-xs text-slate-300">
-                {(avgScore(runA) * 100).toFixed(1)}%
-              </td>
-              <td className="pt-2.5 px-4 text-right font-mono text-xs text-slate-300">
-                {(avgScore(runB) * 100).toFixed(1)}%
-              </td>
+              <td className="pt-2.5 px-4 text-right font-mono text-xs text-slate-300">{(avgScore(runA) * 100).toFixed(1)}%</td>
+              <td className="pt-2.5 px-4 text-right font-mono text-xs text-slate-300">{(avgScore(runB) * 100).toFixed(1)}%</td>
               <td className="pt-2.5 pl-4 text-right">
                 {(() => {
                   const d = avgScore(runB) - avgScore(runA)
                   return (
-                    <span className={clsx(
-                      'text-xs font-mono font-semibold',
-                      d > 0.01 ? 'text-emerald-400' : d < -0.01 ? 'text-red-400' : 'text-slate-500',
-                    )}>
+                    <span className={clsx('text-xs font-mono font-semibold', d > 0.01 ? 'text-emerald-400' : d < -0.01 ? 'text-red-400' : 'text-slate-500')}>
                       {d > 0 ? '+' : ''}{(d * 100).toFixed(1)}%
                     </span>
                   )
@@ -240,10 +222,16 @@ function RunComparisonPanel({ runA, runB, onClose }) {
 }
 
 export default function DashboardPage() {
-  const { data: runs = [], isLoading, isError, error } = useEvalRuns()
-  const startSample = useStartSampleEval()
+  const { data, isLoading, isError, error } = useDashboard()
+  const qc = useQueryClient()
+  const startSample = useStartSampleEval({
+    onSuccess: () => qc.invalidateQueries({ queryKey: DASHBOARD_KEY }),
+  })
   const [compareA, setCompareA] = useState(null)
   const [compareB, setCompareB] = useState(null)
+
+  const runs = data?.runs ?? []
+  const latestRegression = data?.latest_regression ?? null
 
   const completed = runs.filter((r) => r.status === 'completed' && r.scores)
   const latest = completed[0] ?? null
@@ -274,23 +262,13 @@ export default function DashboardPage() {
   }
 
   const activeCount = runs.filter((r) => r.status === 'running').length
-  const avgFaithfulness = completed.length > 0
-    ? completed.slice(0, 5).reduce((sum, r) => sum + (r.scores?.faithfulness ?? 0), 0) / Math.min(completed.length, 5)
-    : null
 
   return (
     <div className="p-6 max-w-7xl space-y-5">
       {isError && <ApiErrorBanner message={error?.message} />}
 
-      {!isLoading && completed.length > 0 && (
-        <ProductHeroBanner
-          latestRun={latest}
-          totalRuns={runs.length}
-          avgFaithfulness={avgFaithfulness}
-        />
-      )}
-
-      <RegressionAlert />
+      {/* Regression alert — shows from combined data, no extra API call */}
+      {latestRegression && <RegressionBanner regression={latestRegression} />}
 
       {activeCount > 0 && (
         <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 px-4 py-2.5 flex items-center gap-2.5">
@@ -305,18 +283,18 @@ export default function DashboardPage() {
         <BestPipelineBanner runs={completed} />
       )}
 
-      {/* Metric cards */}
+      {/* Metric cards — always render (skeleton when loading) */}
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider">
             Latest Scores
-            {latest && (
+            {latest && !isLoading && (
               <span className="ml-2 text-slate-600 normal-case font-normal">
                 from <span className="font-mono text-slate-500">{latest.version_tag}</span>
               </span>
             )}
           </h2>
-          {previous && (
+          {previous && !isLoading && (
             <span className="text-xs text-slate-600">
               vs <span className="font-mono">{previous.version_tag}</span>
             </span>
@@ -339,14 +317,14 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Trend chart */}
+      {/* Trend chart — always renders (skeleton when loading) */}
       <div className="glass rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-sm font-semibold text-slate-200">Metric Trends</h2>
             <p className="text-xs text-slate-500 mt-0.5">Score progression across evaluation runs</p>
           </div>
-          {completed.length > 0 && (
+          {!isLoading && completed.length > 0 && (
             <span className="text-xs text-slate-600 tabular-nums">
               {completed.length} completed run{completed.length !== 1 ? 's' : ''}
             </span>
@@ -355,7 +333,7 @@ export default function DashboardPage() {
         <MetricTrendChart runs={runs} loading={isLoading} />
       </div>
 
-      {/* Run comparison panel — shown when two runs are selected */}
+      {/* Run comparison panel */}
       {compareA && compareB && (
         <RunComparisonPanel
           runA={compareA}
@@ -371,7 +349,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Runs table */}
+      {/* Runs table — always renders (skeleton when loading) */}
       <EvalRunsTable
         runs={runs}
         loading={isLoading}

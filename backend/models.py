@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     ARRAY, TIMESTAMP, Boolean, VARCHAR,
-    Float, ForeignKey, Integer, Text, UniqueConstraint,
+    Float, ForeignKey, Index, Integer, Text, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -49,6 +49,15 @@ class EvalRun(Base):
     cases: Mapped[list["EvalCase"]] = relationship(
         "EvalCase", back_populates="eval_run",
         cascade="all, delete-orphan", lazy="selectin",
+    )
+
+    __table_args__ = (
+        # Dashboard query: ORDER BY created_at DESC — without this, full table scan
+        Index("ix_eval_runs_created_at", "created_at"),
+        # Regression query: WHERE has_regression = true ORDER BY created_at DESC
+        Index("ix_eval_runs_regression_created", "has_regression", "created_at"),
+        # Status filter for running-run polling
+        Index("ix_eval_runs_status", "status"),
     )
 
 

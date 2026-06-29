@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class TestCaseInput(BaseModel):
@@ -83,7 +83,7 @@ class QueryRequest(BaseModel):
     # without code changes. These override the pipeline defaults.
     use_mmr: bool = Field(default=True, description="MMR retrieval (True) vs cosine similarity (False)")
     fetch_k: int = Field(default=20, ge=5, le=100, description="Candidate pool size for MMR")
-    mmr_lambda: float = Field(default=0.5, ge=0.0, le=1.0, description="MMR relevance weight (1.0=pure relevance, 0.0=pure diversity)")
+    mmr_lambda: float = Field(default=0.7, ge=0.0, le=1.0, description="MMR relevance weight (1.0=pure relevance, 0.0=pure diversity)")
 
 
 class RetrievedChunk(BaseModel):

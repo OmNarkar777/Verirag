@@ -34,8 +34,12 @@ class Settings(BaseSettings):
     hf_token: str = Field(default="", description="HuggingFace token for Inference API embeddings")
 
     # RAG
-    retrieval_top_k: int = Field(default=5)
-    retrieval_lambda: float = Field(default=0.5)
+    # top_k=7: demo corpus is ~12 chunks total; retrieving 7 instead of 5 improves
+    # context_recall significantly without hurting faithfulness (grounding prompt is strict).
+    # lambda=0.7: TF-IDF produces keyword scores, not dense vectors — favoring relevance
+    # over diversity improves recall when chunks already have low lexical overlap.
+    retrieval_top_k: int = Field(default=7)
+    retrieval_lambda: float = Field(default=0.7)
 
     # Regression detection - 0.10 = 10-point absolute drop triggers flag
     regression_threshold: float = Field(default=0.10)

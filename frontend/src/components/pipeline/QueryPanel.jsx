@@ -159,10 +159,10 @@ function ExperimentControls({ topK, setTopK, useMmr, setUseMmr, fetchK, setFetch
 
 export default function QueryPanel({ onEvalCase }) {
   const [question, setQuestion] = useState('')
-  const [topK, setTopK] = useState(5)
+  const [topK, setTopK] = useState(7)
   const [useMmr, setUseMmr] = useState(true)
   const [fetchK, setFetchK] = useState(20)
-  const [mmrLambda, setMmrLambda] = useState(0.5)
+  const [mmrLambda, setMmrLambda] = useState(0.7)
   const queryMutation = useQueryPipeline()
 
   const handleQuery = () => {

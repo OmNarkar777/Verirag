@@ -77,3 +77,46 @@
 2026-04-19 16:42:29.929 | INFO     | backend.services.langsmith_service:__init__:17 - LangSmith connected | project=verirag
 2026-04-19 16:42:30.039 | INFO     | backend.rag.pipeline:query:61 - RAG query | question=What is self-attention?
 2026-04-19 16:42:31.066 | INFO     | backend.rag.pipeline:query:87 - RAG response | chunks=2 | answer_len=320
+2026-06-26 00:28:27.572 | INFO     | backend.main:lifespan:80 - ============================================================
+2026-06-26 00:28:27.572 | INFO     | backend.main:lifespan:81 - VeriRAG starting | env=development | vercel=False
+2026-06-26 00:28:27.572 | WARNING  | backend.main:lifespan:88 - HF_TOKEN not set - embedding API calls will use anonymous rate limits
+2026-06-26 00:28:27.902 | INFO     | backend.rag.vectorstore:__init__:61 - VectorStoreManager initialized | embedding_model=sentence-transformers/all-MiniLM-L6-v2 (HF Inference API) | persist_dir=./chroma_db
+2026-06-26 00:28:27.904 | INFO     | backend.main:lifespan:97 - VectorStore initialized
+2026-06-26 00:28:28.346 | INFO     | backend.main:lifespan:103 - RAG pipeline initialized
+2026-06-26 00:28:28.673 | INFO     | backend.evaluator.ragas_runner:__init__:52 - RagasRunner initialized | judge_model=llama-3.3-70b-versatile
+2026-06-26 00:28:28.673 | INFO     | backend.main:lifespan:109 - RAGAS runner initialized
+2026-06-26 00:28:32.861 | ERROR    | backend.main:lifespan:120 - Database connection failed: Multiple exceptions: [Errno 10061] Connect call failed ('::1', 5432, 0, 0), [Errno 10061] Connect call failed ('127.0.0.1', 5432)
+2026-06-26 00:28:32.862 | INFO     | backend.main:lifespan:124 - VeriRAG startup complete
+2026-06-26 00:28:32.862 | INFO     | backend.main:lifespan:125 - ============================================================
+2026-06-28 02:19:12.212 | INFO     | backend.main:lifespan:80 - ============================================================
+2026-06-28 02:19:12.212 | INFO     | backend.main:lifespan:81 - VeriRAG starting | env=development | vercel=False
+2026-06-28 02:19:12.212 | WARNING  | backend.main:lifespan:88 - HF_TOKEN not set - embedding API calls will use anonymous rate limits
+2026-06-28 02:19:12.371 | INFO     | backend.rag.vectorstore:__init__:61 - VectorStoreManager initialized | embedding_model=sentence-transformers/all-MiniLM-L6-v2 (HF Inference API) | persist_dir=./chroma_db
+2026-06-28 02:19:12.372 | INFO     | backend.main:lifespan:97 - VectorStore initialized
+2026-06-28 02:19:12.835 | INFO     | backend.main:lifespan:103 - RAG pipeline initialized
+2026-06-28 02:19:13.195 | INFO     | backend.evaluator.ragas_runner:__init__:57 - RagasRunner initialized | judge_model=llama-3.3-70b-versatile
+2026-06-28 02:19:13.195 | INFO     | backend.main:lifespan:109 - RAGAS runner initialized
+2026-06-28 02:19:17.288 | ERROR    | backend.main:lifespan:120 - Database connection failed: [WinError 1225] The remote computer refused the network connection
+2026-06-28 02:19:17.288 | INFO     | backend.main:lifespan:124 - VeriRAG startup complete
+2026-06-28 02:19:17.290 | INFO     | backend.main:lifespan:125 - ============================================================
+2026-06-28 02:20:11.158 | INFO     | backend.services.langsmith_service:__init__:17 - LangSmith connected | project=verirag
+2026-06-28 02:20:11.270 | INFO     | backend.rag.pipeline:query:67 - RAG query | question=What is RAG?
+2026-06-28 02:20:12.692 | ERROR    | backend.routers.pipeline:query_pipeline:223 - Pipeline query failed | question=What is RAG? | error=InferenceClient.feature_extraction() got an unexpected keyword argument 'normalize'
+2026-06-28 02:20:29.936 | INFO     | backend.rag.pipeline:query:67 - RAG query | question=What is RAG?
+2026-06-28 02:20:30.555 | ERROR    | backend.routers.pipeline:query_pipeline:223 - Pipeline query failed | question=What is RAG? | error=InferenceClient.feature_extraction() got an unexpected keyword argument 'normalize'
+2026-06-28 02:23:56.609 | INFO     | backend.main:lifespan:80 - ============================================================
+2026-06-28 02:23:56.609 | INFO     | backend.main:lifespan:81 - VeriRAG starting | env=development | vercel=False
+2026-06-28 02:23:56.609 | WARNING  | backend.main:lifespan:88 - HF_TOKEN not set - embedding API calls will use anonymous rate limits
+2026-06-28 02:23:56.733 | INFO     | backend.rag.vectorstore:__init__:61 - VectorStoreManager initialized | embedding_model=sentence-transformers/all-MiniLM-L6-v2 (HF Inference API) | persist_dir=./chroma_db
+2026-06-28 02:23:56.733 | INFO     | backend.main:lifespan:97 - VectorStore initialized
+2026-06-28 02:23:57.192 | INFO     | backend.main:lifespan:103 - RAG pipeline initialized
+2026-06-28 02:23:57.545 | INFO     | backend.evaluator.ragas_runner:__init__:60 - RagasRunner initialized | judge_model=llama-3.3-70b-versatile
+2026-06-28 02:23:57.545 | INFO     | backend.main:lifespan:109 - RAGAS runner initialized
+2026-06-28 02:24:01.631 | ERROR    | backend.main:lifespan:120 - Database connection failed: [WinError 1225] The remote computer refused the network connection
+2026-06-28 02:24:01.631 | INFO     | backend.main:lifespan:124 - VeriRAG startup complete
+2026-06-28 02:24:01.632 | INFO     | backend.main:lifespan:125 - ============================================================
+2026-06-28 02:24:24.528 | INFO     | backend.services.langsmith_service:__init__:17 - LangSmith connected | project=verirag
+2026-06-28 02:24:24.601 | INFO     | backend.rag.pipeline:query:67 - RAG query | question=What is RAG?
+2026-06-28 02:24:26.532 | ERROR    | backend.routers.pipeline:query_pipeline:223 - Pipeline query failed | question=What is RAG? | error=(MaxRetryError('HTTPSConnectionPool(host=\'api-inference.huggingface.co\', port=443): Max retries exceeded with url: /pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2 (Caused by NameResolutionError("HTTPSConnection(host=\'api-inference.huggingface.co\', port=443): Failed to resolve \'api-inference.huggingface.co\' ([Errno 11001] getaddrinfo failed)"))'), '(Request ID: a1561869-20b1-4434-8f39-ef39bf21e586)')
+2026-06-28 02:25:17.858 | INFO     | backend.rag.pipeline:query:67 - RAG query | question=What is RAG?
+2026-06-28 02:25:18.560 | ERROR    | backend.routers.pipeline:query_pipeline:223 - Pipeline query failed | question=What is RAG? | error=(MaxRetryError('HTTPSConnectionPool(host=\'api-inference.huggingface.co\', port=443): Max retries exceeded with url: /pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2 (Caused by NameResolutionError("HTTPSConnection(host=\'api-inference.huggingface.co\', port=443): Failed to resolve \'api-inference.huggingface.co\' ([Errno 11001] getaddrinfo failed)"))'), '(Request ID: 88468f78-d945-40ff-a887-1ca3e78c4081)')

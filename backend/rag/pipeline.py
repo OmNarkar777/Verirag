@@ -5,7 +5,6 @@ from loguru import logger
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_groq import ChatGroq
 from langsmith import traceable
 
 from backend.config import get_settings
@@ -85,6 +84,7 @@ class RAGPipeline:
             os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
 
         if settings.groq_api_key:
+            from langchain_groq import ChatGroq
             self.llm = ChatGroq(
                 api_key=settings.groq_api_key,
                 model=settings.groq_model,

@@ -29,7 +29,10 @@ export const startEvalRun = (payload) =>
 export const startSampleEval = () =>
   api.post('/eval/run/sample').then((r) => r.data)
 
-export const listEvalRuns = ({ limit = 50, offset = 0 } = {}) =>
+export const getDashboard = ({ limit = 20 } = {}) =>
+  api.get('/eval/dashboard', { params: { limit } }).then((r) => r.data)
+
+export const listEvalRuns = ({ limit = 20, offset = 0 } = {}) =>
   api.get('/eval/runs', { params: { limit, offset } }).then((r) => r.data)
 
 export const getEvalRun = (runId) =>
@@ -67,7 +70,7 @@ export const ingestText = (text, filename) => {
   }).then((r) => r.data)
 }
 
-export const queryPipeline = (question, { topK = 5, useMmr = true, fetchK = 20, mmrLambda = 0.5 } = {}) =>
+export const queryPipeline = (question, { topK = 7, useMmr = true, fetchK = 20, mmrLambda = 0.7 } = {}) =>
   api.post('/pipeline/query', {
     question,
     top_k: topK,

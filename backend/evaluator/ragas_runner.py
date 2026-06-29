@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 
 from huggingface_hub import InferenceClient
 from langchain_core.embeddings import Embeddings
-from langchain_groq import ChatGroq
 from loguru import logger
 
 from backend.config import get_settings
@@ -66,6 +65,7 @@ class RagasRunner:
                 "GROQ_API_KEY is required for evaluation. "
                 "Set it in your Vercel environment variables."
             )
+        from langchain_groq import ChatGroq
         self.judge_llm = ChatGroq(
             api_key=settings.groq_api_key,
             model=settings.groq_model,

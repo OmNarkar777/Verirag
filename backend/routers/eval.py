@@ -1,10 +1,12 @@
-"""routers/eval.py â€” Evaluation endpoints with rate limiting and regression detection."""
+"""routers/eval.py — Evaluation endpoints with rate limiting and regression detection."""
 import asyncio
+import time
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import get_settings
@@ -18,6 +20,31 @@ from backend.services.eval_service import EvalService, get_eval_service
 
 router = APIRouter(prefix="/eval", tags=["evaluation"])
 settings = get_settings()
+
+# Module-level response cache — survives across requests within the same warm Lambda.
+# Keyed by (endpoint, params). Value is (timestamp, payload).
+# TTL: 30s — fresh enough for live polling, instant for rapid navigation.
+_CACHE_TTL = 30.0
+_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _cache_get(key: str) -> Any | None:
+    entry = _cache.get(key)
+    if entry and (time.monotonic() - entry[0]) < _CACHE_TTL:
+        return entry[1]
+    return None
+
+
+def _cache_set(key: str, value: Any) -> None:
+    _cache[key] = (time.monotonic(), value)
+
+
+def _cache_invalidate_prefix(prefix: str) -> None:
+    """Evict all cache entries whose key starts with prefix (after write operations)."""
+    for k in list(_cache.keys()):
+        if k.startswith(prefix):
+            del _cache[k]
+
 
 # Semaphore: hard cap on concurrent RAGAS evals.
 # Each run makes ~200 Groq API calls. >5 concurrent = cascading rate-limit failures.
@@ -33,6 +60,9 @@ async def _guarded_execution(service, eval_run_id, test_cases) -> None:
             await service.execute_evaluation(eval_run_id, test_cases)
         finally:
             _active_evals -= 1
+            # Invalidate the dashboard cache so the new results appear immediately.
+            _cache_invalidate_prefix("dashboard:")
+            _cache_invalidate_prefix("runs:")
 
 
 @router.post("/run", response_model=EvalRunResponse, status_code=202)
@@ -229,6 +259,8 @@ async def run_sample_eval(
     run.avg_context_recall = round(float(np.mean(c_scores)), 4)
 
     await db.commit()
+    _cache_invalidate_prefix("dashboard:")
+    _cache_invalidate_prefix("runs:")
     logger.info(
         f"Sample eval complete | id={run_id} | {version_tag} | "
         f"faith={run.avg_faithfulness} rel={run.avg_answer_relevancy}"
@@ -242,17 +274,63 @@ async def run_sample_eval(
     )
 
 
+@router.get("/dashboard", summary="Combined dashboard payload — runs + regression flag in one round trip")
+async def get_dashboard(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Single endpoint for the dashboard page.  Returns runs + latest regression in
+    one DB call, avoiding two separate round trips (each with its own TCP+SSL
+    handshake to Supabase) that previously caused the 2-minute dashboard load.
+
+    Cached for 30 seconds at the Lambda module level so rapid navigation and
+    refetch-on-window-focus don't hammer Supabase.
+    """
+    cache_key = f"dashboard:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    result = await db.execute(
+        select(EvalRun)
+        .order_by(desc(EvalRun.created_at))
+        .limit(limit)
+    )
+    runs = result.scalars().all()
+    serialised = [_run_to_regression_schema(r) for r in runs]
+
+    latest_regression = next(
+        (r for r in serialised if r.has_regression), None
+    )
+
+    payload = {
+        "runs": [r.model_dump(mode="json") for r in serialised],
+        "latest_regression": latest_regression.model_dump(mode="json") if latest_regression else None,
+        "total_returned": len(serialised),
+    }
+    _cache_set(cache_key, payload)
+    return payload
+
+
 @router.get("/runs", response_model=list[EvalRunWithRegression])
 async def list_eval_runs(
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> list[EvalRunWithRegression]:
+    cache_key = f"runs:{limit}:{offset}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     result = await db.execute(
-        select(EvalRun).order_by(EvalRun.created_at.desc()).limit(limit).offset(offset)
+        select(EvalRun).order_by(desc(EvalRun.created_at)).limit(limit).offset(offset)
     )
     runs = result.scalars().all()
-    return [_run_to_regression_schema(r) for r in runs]
+    serialised = [_run_to_regression_schema(r) for r in runs]
+    _cache_set(cache_key, serialised)
+    return serialised
 
 
 @router.get("/runs/{run_id}", response_model=EvalRunDetail)
@@ -311,6 +389,8 @@ async def delete_eval_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     if not run:
         raise HTTPException(status_code=404, detail=f"Eval run {run_id} not found")
     await db.delete(run)
+    _cache_invalidate_prefix("dashboard:")
+    _cache_invalidate_prefix("runs:")
     logger.info(f"Deleted eval run | id={run_id}")
 
 

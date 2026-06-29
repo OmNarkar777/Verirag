@@ -2,12 +2,30 @@
  * hooks/useEvalRuns.js - React Query hooks for eval runs + regression data.
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listEvalRuns, getRegressions, startSampleEval, deleteEvalRun, getEvalStatus } from '../api/client.js'
+import { getDashboard, listEvalRuns, getRegressions, startSampleEval, deleteEvalRun, getEvalStatus } from '../api/client.js'
 
 export const EVAL_RUNS_KEY = ['eval-runs']
 export const REGRESSIONS_KEY = ['regressions']
+export const DASHBOARD_KEY = ['dashboard']
 
-export function useEvalRuns({ limit = 50 } = {}) {
+/**
+ * Combined dashboard query — one DB round trip for runs + regression data.
+ * Replaces separate useEvalRuns() + useRegressions() calls on DashboardPage.
+ */
+export function useDashboard({ limit = 20 } = {}) {
+  return useQuery({
+    queryKey: [...DASHBOARD_KEY, limit],
+    queryFn: () => getDashboard({ limit }),
+    staleTime: 15_000,
+    refetchInterval: ({ data } = {}) => {
+      const hasRunning = data?.runs?.some?.((r) => r.status === 'running')
+      return hasRunning ? 8_000 : 30_000
+    },
+    retry: 1,
+  })
+}
+
+export function useEvalRuns({ limit = 20 } = {}) {
   return useQuery({
     queryKey: [...EVAL_RUNS_KEY, limit],
     queryFn: () => listEvalRuns({ limit }),
@@ -57,6 +75,7 @@ export function useDeleteEvalRun() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: EVAL_RUNS_KEY })
       qc.invalidateQueries({ queryKey: REGRESSIONS_KEY })
+      qc.invalidateQueries({ queryKey: DASHBOARD_KEY })
     },
   })
 }
