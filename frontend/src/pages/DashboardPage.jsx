@@ -1,16 +1,25 @@
 /**
  * DashboardPage — metric overview, trend chart, regression alerts, run history.
- * Shows a product intro banner when data is present so recruiters immediately
- * understand what VeriRAG does and why it matters.
+ * Serves as the hub for the RAG optimization workflow:
+ *   Run → Evaluate → Compare → Optimize → Re-run
  */
 import { useState } from 'react'
+import clsx from 'clsx'
 import { useEvalRuns, useStartSampleEval } from '../hooks/useEvalRuns.js'
 import MetricCard from '../components/dashboard/MetricCard.jsx'
 import MetricTrendChart from '../components/dashboard/MetricTrendChart.jsx'
 import EvalRunsTable from '../components/dashboard/EvalRunsTable.jsx'
 import RegressionAlert from '../components/dashboard/RegressionAlert.jsx'
+import { scoreColorClass, fmtScore } from '../utils/scoreColor.js'
 
 const METRICS = ['faithfulness', 'answer_relevancy', 'context_precision', 'context_recall']
+
+const METRIC_LABELS = {
+  faithfulness: 'Faithfulness',
+  answer_relevancy: 'Answer Relevancy',
+  context_precision: 'Context Precision',
+  context_recall: 'Context Recall',
+}
 
 const METRIC_DESCRIPTIONS = {
   faithfulness: 'Is every answer claim grounded in retrieved context? Measures hallucination.',
@@ -32,49 +41,14 @@ function ApiErrorBanner({ message }) {
   )
 }
 
-function ProductHeroBanner({ latestRun, totalRuns, avgFaithfulness }) {
-  return (
-    <div className="glass rounded-xl p-6 border-brand-500/10 bg-gradient-to-br from-slate-900/80 to-brand-500/5">
-      <div className="flex items-start justify-between gap-6">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-medium text-brand-400 uppercase tracking-widest">Production RAG Evaluation</span>
-          </div>
-          <h2 className="text-lg font-bold text-slate-100 mb-2">
-            Continuous quality measurement for RAG pipelines
-          </h2>
-          <p className="text-sm text-slate-400 max-w-xl leading-relaxed">
-            VeriRAG runs{' '}
-            <a href="https://docs.ragas.io" target="_blank" rel="noreferrer" className="text-brand-400 hover:text-brand-300">
-              RAGAS
-            </a>{' '}
-            evaluations against your RAG pipeline — measuring faithfulness, answer relevancy,
-            context precision, and recall across every version. Regressions are automatically
-            detected and surfaced before they reach production.
-          </p>
-          <div className="flex flex-wrap items-center gap-3 mt-4">
-            <StatPill label="Eval runs" value={totalRuns} />
-            <StatPill label="Avg faithfulness" value={avgFaithfulness != null ? `${(avgFaithfulness * 100).toFixed(1)}%` : '—'} highlight={avgFaithfulness > 0.85} />
-            <StatPill label="Pipeline" value="llama-3.3-70b / MMR" />
-            <StatPill label="Embeddings" value="all-MiniLM-L6-v2" />
-          </div>
-        </div>
-        <div className="hidden lg:flex flex-col items-end gap-2 shrink-0">
-          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-xs text-slate-600 writing-vertical">Live</span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function StatPill({ label, value, highlight }) {
   return (
-    <div className={`flex items-center gap-1.5 text-xs rounded-full px-3 py-1 border ${
+    <div className={clsx(
+      'flex items-center gap-1.5 text-xs rounded-full px-3 py-1 border',
       highlight
         ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300'
-        : 'bg-slate-800 border-slate-700 text-slate-400'
-    }`}>
+        : 'bg-slate-800 border-slate-700 text-slate-400',
+    )}>
       <span className="text-slate-500">{label}:</span>
       <span className="font-semibold">{value}</span>
     </div>
@@ -103,9 +77,173 @@ function MetricTooltip({ metric }) {
   )
 }
 
+function ProductHeroBanner({ latestRun, totalRuns, avgFaithfulness }) {
+  return (
+    <div className="glass rounded-xl p-6 border-brand-500/10 bg-gradient-to-br from-slate-900/80 to-brand-500/5">
+      <div className="flex items-start justify-between gap-6">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-medium text-brand-400 uppercase tracking-widest">RAG Evaluation Platform</span>
+          </div>
+          <h2 className="text-lg font-bold text-slate-100 mb-2">
+            Continuous quality measurement for RAG pipelines
+          </h2>
+          <p className="text-sm text-slate-400 max-w-xl leading-relaxed">
+            VeriRAG measures{' '}
+            <a href="https://docs.ragas.io" target="_blank" rel="noreferrer" className="text-brand-400 hover:text-brand-300">
+              RAGAS
+            </a>{' '}
+            metrics across pipeline versions — faithfulness, answer relevancy,
+            context precision, and recall. Regressions are automatically detected
+            and surfaced. Optimization recommendations explain why each metric changed.
+          </p>
+          <div className="flex flex-wrap items-center gap-3 mt-4">
+            <StatPill label="Eval runs" value={totalRuns} />
+            <StatPill
+              label="Avg faithfulness"
+              value={avgFaithfulness != null ? `${(avgFaithfulness * 100).toFixed(1)}%` : '—'}
+              highlight={avgFaithfulness > 0.85}
+            />
+            <StatPill label="Pipeline" value="llama-3.3-70b / MMR" />
+            <StatPill label="Embeddings" value="all-MiniLM-L6-v2" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function avgScore(run) {
+  const s = run.scores
+  if (!s) return 0
+  const vals = [s.faithfulness, s.answer_relevancy, s.context_precision, s.context_recall]
+    .filter((v) => v != null)
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0
+}
+
+function BestPipelineBanner({ runs }) {
+  const completed = runs.filter((r) => r.status === 'completed' && r.scores)
+  if (completed.length < 2) return null
+
+  const best = completed.reduce((a, b) => avgScore(a) >= avgScore(b) ? a : b)
+  const bestAvg = avgScore(best)
+
+  return (
+    <div className="rounded-xl border border-brand-500/25 bg-brand-500/5 px-5 py-4">
+      <div className="flex items-center gap-3">
+        <span className="text-base">&#127942;</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-semibold text-slate-200">Best Performing Pipeline</p>
+            <code className="text-xs text-brand-400 font-mono">{best.version_tag}</code>
+            <span className="text-xs text-slate-500">
+              avg score: <span className="text-slate-300 font-mono">{(bestAvg * 100).toFixed(1)}%</span>
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-3 mt-1.5">
+            {METRICS.map((m) => best.scores?.[m] != null && (
+              <span key={m} className="text-xs text-slate-500">
+                {METRIC_LABELS[m].split(' ')[0]}:{' '}
+                <span className={clsx('font-mono font-medium', scoreColorClass(best.scores[m], 'text'))}>
+                  {fmtScore(best.scores[m])}
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RunComparisonPanel({ runA, runB, onClose }) {
+  if (!runA || !runB) return null
+
+  return (
+    <div className="glass rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-sm font-semibold text-slate-200">Run Comparison</h2>
+        <button
+          onClick={onClose}
+          className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+        >
+          Clear
+        </button>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
+              <th className="text-left py-2 pr-4 font-medium">Metric</th>
+              <th className="text-right py-2 px-4 font-medium font-mono text-slate-400">{runA.version_tag}</th>
+              <th className="text-right py-2 px-4 font-medium font-mono text-slate-400">{runB.version_tag}</th>
+              <th className="text-right py-2 pl-4 font-medium">Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            {METRICS.map((m) => {
+              const scoreA = runA.scores?.[m]
+              const scoreB = runB.scores?.[m]
+              const delta = scoreA != null && scoreB != null ? scoreB - scoreA : null
+              return (
+                <tr key={m} className="border-b border-slate-800/60">
+                  <td className="py-2.5 pr-4 text-xs text-slate-400">{METRIC_LABELS[m]}</td>
+                  <td className={clsx('py-2.5 px-4 text-right font-mono text-xs tabular-nums', scoreColorClass(scoreA, 'text'))}>
+                    {fmtScore(scoreA)}
+                  </td>
+                  <td className={clsx('py-2.5 px-4 text-right font-mono text-xs tabular-nums', scoreColorClass(scoreB, 'text'))}>
+                    {fmtScore(scoreB)}
+                  </td>
+                  <td className="py-2.5 pl-4 text-right">
+                    {delta != null ? (
+                      <span className={clsx(
+                        'text-xs font-mono font-semibold tabular-nums',
+                        delta > 0.01 ? 'text-emerald-400' : delta < -0.01 ? 'text-red-400' : 'text-slate-500',
+                      )}>
+                        {delta > 0 ? '+' : ''}{(delta * 100).toFixed(1)}%
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-700">—</span>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+            <tr>
+              <td className="pt-2.5 pr-4 text-xs text-slate-500 font-medium">Avg Score</td>
+              <td className="pt-2.5 px-4 text-right font-mono text-xs text-slate-300">
+                {(avgScore(runA) * 100).toFixed(1)}%
+              </td>
+              <td className="pt-2.5 px-4 text-right font-mono text-xs text-slate-300">
+                {(avgScore(runB) * 100).toFixed(1)}%
+              </td>
+              <td className="pt-2.5 pl-4 text-right">
+                {(() => {
+                  const d = avgScore(runB) - avgScore(runA)
+                  return (
+                    <span className={clsx(
+                      'text-xs font-mono font-semibold',
+                      d > 0.01 ? 'text-emerald-400' : d < -0.01 ? 'text-red-400' : 'text-slate-500',
+                    )}>
+                      {d > 0 ? '+' : ''}{(d * 100).toFixed(1)}%
+                    </span>
+                  )
+                })()}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 export default function DashboardPage() {
   const { data: runs = [], isLoading, isError, error } = useEvalRuns()
   const startSample = useStartSampleEval()
+  const [compareA, setCompareA] = useState(null)
+  const [compareB, setCompareB] = useState(null)
 
   const completed = runs.filter((r) => r.status === 'completed' && r.scores)
   const latest = completed[0] ?? null
@@ -117,11 +255,21 @@ export default function DashboardPage() {
   }
 
   const handleRunSample = async () => {
-    const tag = `v${Date.now().toString(36)}-sample`
     try {
-      await startSample.mutateAsync(tag)
+      await startSample.mutateAsync()
     } catch (e) {
       console.error('Failed to start sample eval:', e.message)
+    }
+  }
+
+  const handleCompare = (run) => {
+    if (!compareA) {
+      setCompareA(run)
+    } else if (!compareB && run.id !== compareA.id) {
+      setCompareB(run)
+    } else {
+      setCompareA(run)
+      setCompareB(null)
     }
   }
 
@@ -134,7 +282,6 @@ export default function DashboardPage() {
     <div className="p-6 max-w-7xl space-y-5">
       {isError && <ApiErrorBanner message={error?.message} />}
 
-      {/* Hero banner — shown when data exists so recruiters see product value immediately */}
       {!isLoading && completed.length > 0 && (
         <ProductHeroBanner
           latestRun={latest}
@@ -154,6 +301,10 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {!isLoading && completed.length >= 2 && (
+        <BestPipelineBanner runs={completed} />
+      )}
+
       {/* Metric cards */}
       <div>
         <div className="flex items-center justify-between mb-3">
@@ -165,6 +316,11 @@ export default function DashboardPage() {
               </span>
             )}
           </h2>
+          {previous && (
+            <span className="text-xs text-slate-600">
+              vs <span className="font-mono">{previous.version_tag}</span>
+            </span>
+          )}
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {METRICS.map((m) => (
@@ -199,14 +355,32 @@ export default function DashboardPage() {
         <MetricTrendChart runs={runs} loading={isLoading} />
       </div>
 
+      {/* Run comparison panel — shown when two runs are selected */}
+      {compareA && compareB && (
+        <RunComparisonPanel
+          runA={compareA}
+          runB={compareB}
+          onClose={() => { setCompareA(null); setCompareB(null) }}
+        />
+      )}
+
+      {compareA && !compareB && (
+        <div className="rounded-xl border border-brand-500/25 bg-brand-500/5 px-4 py-2.5 text-xs text-slate-400">
+          <span className="text-brand-400 font-medium">{compareA.version_tag}</span> selected —
+          click another completed run to compare
+        </div>
+      )}
+
       {/* Runs table */}
       <EvalRunsTable
         runs={runs}
         loading={isLoading}
         onRunSample={handleRunSample}
+        onCompare={handleCompare}
+        compareA={compareA}
+        compareB={compareB}
       />
 
-      {/* How it works — shown when no data yet */}
       {!isLoading && runs.length === 0 && (
         <div className="glass rounded-xl p-8 text-center space-y-4">
           <div className="w-12 h-12 rounded-xl bg-brand-500/15 border border-brand-500/25 flex items-center justify-center mx-auto">

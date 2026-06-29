@@ -1,11 +1,13 @@
-﻿/**
- * PipelinePage â€” two-panel layout: document ingestion + RAG query interface.
+/**
+ * PipelinePage — two-panel layout: document ingestion + RAG query interface.
+ * Also shows pipeline config and quick eval actions.
  */
 import { useState } from 'react'
 import { startEvalRun } from '../api/client.js'
 import { useStartSampleEval } from '../hooks/useEvalRuns.js'
 import IngestPanel from '../components/pipeline/IngestPanel.jsx'
 import QueryPanel from '../components/pipeline/QueryPanel.jsx'
+import PipelineConfigPanel from '../components/pipeline/PipelineConfigPanel.jsx'
 
 export default function PipelinePage() {
   const [evalCase, setEvalCase] = useState(null)
@@ -51,6 +53,9 @@ export default function PipelinePage() {
 
   return (
     <div className="p-6 max-w-7xl space-y-6">
+      {/* Pipeline Config — always visible at top */}
+      <PipelineConfigPanel />
+
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div>
           <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">Document Ingestion</h2>
@@ -127,7 +132,7 @@ export default function PipelinePage() {
         )}
         <div className="flex flex-wrap gap-3">
           <button
-            onClick={() => { setSampleNotice(null); startSample.mutate('v0.0.1-quick') }}
+            onClick={() => { setSampleNotice(null); startSample.mutate() }}
             disabled={startSample.isPending}
             className="text-xs border border-slate-700 hover:border-slate-600 text-slate-300 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
           >

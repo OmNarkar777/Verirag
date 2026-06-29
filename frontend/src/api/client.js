@@ -26,8 +26,8 @@ api.interceptors.response.use(
 export const startEvalRun = (payload) =>
   api.post('/eval/run', payload).then((r) => r.data)
 
-export const startSampleEval = (versionTag = 'v0.0.1-sample') =>
-  api.post(`/eval/run/sample?version_tag=${encodeURIComponent(versionTag)}`).then((r) => r.data)
+export const startSampleEval = () =>
+  api.post('/eval/run/sample').then((r) => r.data)
 
 export const listEvalRuns = ({ limit = 50, offset = 0 } = {}) =>
   api.get('/eval/runs', { params: { limit, offset } }).then((r) => r.data)
@@ -72,6 +72,9 @@ export const queryPipeline = (question, topK = 5) =>
 
 export const getPipelineStats = () =>
   api.get('/pipeline/stats').then((r) => r.data)
+
+export const getPipelineConfig = () =>
+  api.get('/pipeline/config').then((r) => r.data)
 
 export const listDocuments = () =>
   api.get('/pipeline/documents').then((r) => r.data)

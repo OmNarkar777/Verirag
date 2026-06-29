@@ -1,4 +1,4 @@
-﻿"""routers/eval.py â€” Evaluation endpoints with rate limiting and regression detection."""
+"""routers/eval.py â€” Evaluation endpoints with rate limiting and regression detection."""
 import asyncio
 import uuid
 
@@ -166,8 +166,18 @@ async def run_sample_eval(
         run_metadata={
             "source": "builtin",
             "dataset": "sample_5_ai_ml_cases",
-            "groq_model": settings.groq_model,
             "scoring": "direct-llm-judge",
+            # Pipeline config — stored so runs can be compared by configuration
+            "pipeline_config": {
+                "chunk_size": 512,
+                "chunk_overlap": 50,
+                "embedding": "TF-IDF fallback" if not settings.hf_token else settings.embedding_model,
+                "retrieval_strategy": "MMR",
+                "top_k": settings.retrieval_top_k,
+                "mmr_lambda": settings.retrieval_lambda,
+                "llm": settings.groq_model,
+            },
+            # Scoring methodology
             "faithfulness": "Groq LLM judge",
             "answer_relevancy": "Groq LLM judge",
             "context_precision": "TF-IDF cosine similarity",

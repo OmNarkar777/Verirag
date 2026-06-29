@@ -1,4 +1,4 @@
-﻿/**
+/**
  * hooks/useEvalDetails.js â€” React Query hooks for a single eval run + its cases.
  * TanStack Query v5: refetchInterval receives { data } not data directly.
  */

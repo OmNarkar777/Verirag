@@ -249,6 +249,57 @@ async def get_pipeline_stats(
 
 
 @router.get(
+    "/config",
+    summary="Current pipeline configuration",
+)
+async def get_pipeline_config() -> dict:
+    """
+    GET /pipeline/config
+
+    Returns the current RAG pipeline configuration.
+    Used by the UI to display and compare pipeline settings across experiments.
+    """
+    from backend.config import get_settings
+    s = get_settings()
+
+    embed_mode = (
+        f"HuggingFace Inference API ({s.embedding_model})"
+        if s.hf_token
+        else "TF-IDF hash embedder (fallback)"
+    )
+
+    return {
+        "chunking": {
+            "chunk_size": 512,
+            "chunk_overlap": 50,
+            "strategy": "RecursiveCharacterTextSplitter",
+            "separators": ["\\n\\n", "\\n", ". ", " "],
+        },
+        "embedding": {
+            "model": embed_mode,
+            "dimensions": 384,
+        },
+        "retrieval": {
+            "strategy": "MMR (Maximal Marginal Relevance)",
+            "top_k": s.retrieval_top_k,
+            "mmr_lambda": s.retrieval_lambda,
+            "fetch_k": 20,
+        },
+        "generation": {
+            "llm": s.groq_model,
+            "temperature": s.groq_temperature,
+            "provider": "Groq",
+        },
+        "evaluation": {
+            "faithfulness": "Groq LLM judge",
+            "answer_relevancy": "Groq LLM judge",
+            "context_precision": "TF-IDF cosine similarity",
+            "context_recall": "keyword overlap",
+        },
+    }
+
+
+@router.get(
     "/documents",
     summary="List ingested documents from PostgreSQL",
 )

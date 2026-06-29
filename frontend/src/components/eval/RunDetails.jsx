@@ -16,6 +16,7 @@ import { useEvalRun } from '../../hooks/useEvalDetails.js'
 import MetricCard from '../dashboard/MetricCard.jsx'
 import ScoreDistribution from './ScoreDistribution.jsx'
 import CaseTable from './CaseTable.jsx'
+import OptimizationInsights from './OptimizationInsights.jsx'
 import { METRIC_LABELS, fmtScore } from '../../utils/scoreColor.js'
 
 const METRICS = ['faithfulness', 'answer_relevancy', 'context_precision', 'context_recall']
@@ -165,6 +166,34 @@ export default function RunDetails() {
           </a>
         )}
       </div>
+
+      {/* Optimization insights — only shown for completed runs */}
+      {run.status === 'completed' && (
+        <OptimizationInsights scores={scores} />
+      )}
+
+      {/* Pipeline config used in this run */}
+      {run.run_metadata?.pipeline_config && (
+        <div className="glass rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-slate-200 mb-3">Pipeline Configuration</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+            {[
+              ['Chunk Size', `${run.run_metadata.pipeline_config.chunk_size} tokens`],
+              ['Chunk Overlap', `${run.run_metadata.pipeline_config.chunk_overlap} tokens`],
+              ['Retrieval', run.run_metadata.pipeline_config.retrieval_strategy],
+              ['Top-K', run.run_metadata.pipeline_config.top_k],
+              ['MMR Lambda', run.run_metadata.pipeline_config.mmr_lambda],
+              ['Embedding', run.run_metadata.pipeline_config.embedding],
+              ['LLM', run.run_metadata.pipeline_config.llm],
+            ].map(([k, v]) => (
+              <div key={k}>
+                <p className="text-slate-500 uppercase tracking-wider mb-0.5">{k}</p>
+                <p className="text-slate-300 font-mono truncate">{String(v)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Per-case table */}
       <CaseTable runId={id} />

@@ -49,7 +49,7 @@ function SkeletonRow() {
   )
 }
 
-export default function EvalRunsTable({ runs = [], loading = false, onRunSample }) {
+export default function EvalRunsTable({ runs = [], loading = false, onRunSample, onCompare, compareA, compareB }) {
   const [deleting, setDeleting] = useState(null)
   const [showFailed, setShowFailed] = useState(false)
   const deleteMutation = useDeleteEvalRun()
@@ -95,7 +95,7 @@ export default function EvalRunsTable({ runs = [], loading = false, onRunSample 
           <thead>
             <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
               {['Version', 'Pipeline', 'Date', 'Cases', 'Faith.', 'Relev.', 'Prec.', 'Recall', 'Status', ''].map((h) => (
-                <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
+                <th key={h} className="px-4 py-3 text-left font-medium whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
@@ -114,12 +114,18 @@ export default function EvalRunsTable({ runs = [], loading = false, onRunSample 
               </tr>
             )}
 
-            {!loading && visibleRuns.map((run) => (
+            {!loading && visibleRuns.map((run) => {
+              const isSelectedA = compareA?.id === run.id
+              const isSelectedB = compareB?.id === run.id
+              const isSelected = isSelectedA || isSelectedB
+              return (
               <tr
                 key={run.id}
                 className={clsx(
                   'border-b border-slate-800/60 hover:bg-slate-800/30 transition-colors',
                   run.has_regression && 'bg-red-950/20',
+                  isSelectedA && 'ring-1 ring-inset ring-brand-500/30 bg-brand-500/5',
+                  isSelectedB && 'ring-1 ring-inset ring-emerald-500/30 bg-emerald-500/5',
                 )}
               >
                 {/* Version */}
@@ -165,13 +171,24 @@ export default function EvalRunsTable({ runs = [], loading = false, onRunSample 
 
                 {/* Actions */}
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 whitespace-nowrap">
                     <Link
                       to={`/runs/${run.id}`}
                       className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
                     >
                       View
                     </Link>
+                    {onCompare && run.status === 'completed' && (
+                      <button
+                        onClick={() => onCompare(run)}
+                        className={clsx(
+                          'text-xs transition-colors',
+                          isSelected ? 'text-brand-400' : 'text-slate-600 hover:text-brand-400',
+                        )}
+                      >
+                        {isSelected ? 'Selected' : 'Compare'}
+                      </button>
+                    )}
                     <button
                       onClick={() => handleDelete(run.id)}
                       disabled={deleting === run.id}
@@ -182,7 +199,8 @@ export default function EvalRunsTable({ runs = [], loading = false, onRunSample 
                   </div>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
