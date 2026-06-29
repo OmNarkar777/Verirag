@@ -1,10 +1,5 @@
 /**
- * QueryPanel — interactive RAG query interface.
- *
- * Send a question → get the LLM answer + retrieved chunks with scores.
- * The "Use as Eval Case" button pre-fills an eval run form with
- * the question/answer/contexts — closing the loop between querying
- * and evaluating.
+ * QueryPanel — interactive RAG query interface with confidence display.
  */
 import { useState } from 'react'
 import clsx from 'clsx'
@@ -16,6 +11,22 @@ const EXAMPLE_QUESTIONS = [
   'How does RAGAS measure faithfulness?',
   'Why does MMR retrieval improve context precision?',
 ]
+
+const CONFIDENCE_CONFIG = {
+  high:   { label: 'High confidence',   className: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/25', dot: 'bg-emerald-400' },
+  medium: { label: 'Medium confidence', className: 'text-amber-400 bg-amber-500/10 border-amber-500/25',       dot: 'bg-amber-400'   },
+  low:    { label: 'Low confidence',    className: 'text-red-400 bg-red-500/10 border-red-500/25',             dot: 'bg-red-400'     },
+}
+
+function ConfidenceBadge({ confidence }) {
+  const cfg = CONFIDENCE_CONFIG[confidence] ?? CONFIDENCE_CONFIG.medium
+  return (
+    <span className={clsx('flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium', cfg.className)}>
+      <span className={clsx('w-1.5 h-1.5 rounded-full', cfg.dot)} />
+      {cfg.label}
+    </span>
+  )
+}
 
 export default function QueryPanel({ onEvalCase }) {
   const [question, setQuestion] = useState('')
@@ -39,31 +50,31 @@ export default function QueryPanel({ onEvalCase }) {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Input */}
       <div className="glass rounded-xl p-4 space-y-3">
-        <div className="flex gap-2">
-          <textarea
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && e.metaKey && handleQuery()}
-            placeholder="Ask a question about your ingested documents…"
-            rows={3}
-            className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-brand-500 resize-none"
-          />
-        </div>
+        <textarea
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && e.metaKey && handleQuery()}
+          placeholder="Ask a question about your ingested documents…"
+          rows={3}
+          className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-brand-500 resize-none"
+        />
 
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs text-slate-500">
-            <span>Top-K chunks:</span>
-            <select
-              value={topK}
-              onChange={(e) => setTopK(Number(e.target.value))}
-              className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-slate-300 focus:outline-none"
-            >
-              {[3, 5, 8, 10].map((k) => <option key={k} value={k}>{k}</option>)}
-            </select>
-            <span className="text-slate-600 ml-2">⌘↵ to submit</span>
+          <div className="flex items-center gap-3 text-xs text-slate-500">
+            <div className="flex items-center gap-1.5">
+              <span>Top-K:</span>
+              <select
+                value={topK}
+                onChange={(e) => setTopK(Number(e.target.value))}
+                className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-slate-300 focus:outline-none text-xs"
+              >
+                {[3, 5, 8, 10].map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </div>
+            <span className="text-slate-700">⌘↵ to submit</span>
           </div>
           <button
             onClick={handleQuery}
@@ -76,14 +87,14 @@ export default function QueryPanel({ onEvalCase }) {
 
         {/* Example questions */}
         <div className="flex flex-wrap gap-2 pt-1 border-t border-slate-800">
-          <span className="text-xs text-slate-600">Examples:</span>
+          <span className="text-xs text-slate-600">Try:</span>
           {EXAMPLE_QUESTIONS.map((q) => (
             <button
               key={q}
               onClick={() => setQuestion(q)}
-              className="text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2 transition-colors"
+              className="text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2 transition-colors text-left"
             >
-              {q.length > 50 ? q.slice(0, 50) + '…' : q}
+              {q.length > 55 ? q.slice(0, 55) + '…' : q}
             </button>
           ))}
         </div>
@@ -101,8 +112,11 @@ export default function QueryPanel({ onEvalCase }) {
         <div className="space-y-4">
           {/* Answer */}
           <div className="glass rounded-xl p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-slate-200">Answer</h3>
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <div className="flex items-center gap-3">
+                <h3 className="text-sm font-semibold text-slate-200">Answer</h3>
+                <ConfidenceBadge confidence={result.confidence} />
+              </div>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-slate-600 font-mono">{result.model_used}</span>
                 {onEvalCase && (
@@ -115,27 +129,39 @@ export default function QueryPanel({ onEvalCase }) {
                 )}
               </div>
             </div>
+
+            {result.confidence === 'low' && (
+              <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-400">
+                Low retrieval confidence — the indexed documents may not fully cover this topic.
+                Consider uploading more relevant documents.
+              </div>
+            )}
+
             <p className="text-sm text-slate-300 leading-relaxed">{result.answer}</p>
           </div>
 
           {/* Retrieved chunks */}
           <div className="glass rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-slate-200 mb-3">
-              Retrieved Chunks
-              <span className="ml-2 text-xs text-slate-500 font-normal">
-                ({result.retrieved_chunks.length} chunks — these become the <code className="text-slate-400">contexts</code> in RAGAS eval)
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-200">Retrieved Context</h3>
+              <span className="text-xs text-slate-500">
+                {result.retrieved_chunks.length} chunks ·{' '}
+                <code className="text-slate-400">contexts</code> in RAGAS eval
               </span>
-            </h3>
+            </div>
             <div className="space-y-3">
               {result.retrieved_chunks.map((chunk, i) => (
                 <div key={i} className="border border-slate-800 rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-slate-500 font-mono">{chunk.source}</span>
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-xs text-slate-600 shrink-0 tabular-nums">#{i + 1}</span>
+                      <span className="text-xs text-slate-400 font-mono truncate">{chunk.source}</span>
+                    </div>
                     <span className={clsx(
-                      'text-xs font-mono tabular-nums',
+                      'text-xs font-mono tabular-nums shrink-0',
                       scoreColorClass(chunk.score, 'text'),
                     )}>
-                      score: {chunk.score.toFixed(3)}
+                      {fmtScore(chunk.score)}
                     </span>
                   </div>
                   <p className="text-xs text-slate-400 leading-relaxed">{chunk.content}</p>
@@ -154,7 +180,7 @@ export default function QueryPanel({ onEvalCase }) {
                 rel="noreferrer"
                 className="text-slate-400 hover:text-slate-200 underline"
               >
-                {result.langsmith_trace_url} ↗
+                LangSmith ↗
               </a>
             </p>
           )}

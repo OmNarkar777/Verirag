@@ -218,6 +218,7 @@ async def query_pipeline(
             retrieved_chunks=chunks,
             model_used=result["model_used"],
             langsmith_trace_url=langsmith.get_project_url(),
+            confidence=result.get("confidence", "medium"),
         )
 
     except Exception as e:

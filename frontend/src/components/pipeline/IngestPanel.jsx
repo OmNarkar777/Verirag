@@ -1,41 +1,88 @@
 /**
  * IngestPanel — document ingestion with drag-and-drop file upload.
- *
- * Supports .txt, .md, .pdf via the POST /pipeline/ingest endpoint.
- * Shows real-time progress: uploading → processing → done with chunk count.
- *
- * Also has a "paste text" mode for quick ingestion without file save.
  */
 import { useState, useRef, useCallback } from 'react'
 import clsx from 'clsx'
 import { useIngestFile, useIngestText, useDocuments, usePipelineStats } from '../../hooks/usePipeline.js'
 import { formatDistanceToNow } from 'date-fns'
 
-function DropZone({ onFiles, isDragging }) {
+function UploadIcon({ className }) {
   return (
-    <div
-      className={clsx(
-        'border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer',
-        isDragging
-          ? 'border-brand-500 bg-brand-500/5'
-          : 'border-slate-700 hover:border-slate-600 hover:bg-slate-800/30',
-      )}
-    >
-      <div className="text-3xl mb-3">📄</div>
-      <p className="text-sm text-slate-300 font-medium">
-        Drop files here or{' '}
-        <span className="text-brand-400 cursor-pointer">click to browse</span>
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  )
+}
+
+function SpinnerIcon({ className }) {
+  return (
+    <svg className={clsx('animate-spin', className)} viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+    </svg>
+  )
+}
+
+function FileIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </svg>
+  )
+}
+
+function TextIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="17" y1="10" x2="3" y2="10" />
+      <line x1="21" y1="6" x2="3" y2="6" />
+      <line x1="21" y1="14" x2="3" y2="14" />
+      <line x1="17" y1="18" x2="3" y2="18" />
+    </svg>
+  )
+}
+
+function DropZone({ isDragging }) {
+  return (
+    <div className={clsx(
+      'border-2 border-dashed rounded-xl p-10 text-center transition-all',
+      isDragging
+        ? 'border-brand-500 bg-brand-500/5'
+        : 'border-slate-700 hover:border-slate-600 hover:bg-slate-800/20',
+    )}>
+      <div className="flex justify-center mb-4">
+        <div className="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center">
+          <UploadIcon className="w-6 h-6 text-slate-400" />
+        </div>
+      </div>
+      <p className="text-sm font-medium text-slate-300 mb-1">
+        Drop files here or <span className="text-brand-400">click to browse</span>
       </p>
-      <p className="text-xs text-slate-600 mt-1">Supports .txt, .md, .pdf</p>
+      <p className="text-xs text-slate-600">Supported: .txt, .md, .pdf</p>
+    </div>
+  )
+}
+
+function ProcessingState() {
+  return (
+    <div className="border-2 border-dashed border-brand-500/40 rounded-xl p-10 text-center">
+      <div className="flex justify-center mb-4">
+        <SpinnerIcon className="w-6 h-6 text-brand-400" />
+      </div>
+      <p className="text-sm font-medium text-brand-300">Processing document…</p>
+      <p className="text-xs text-slate-600 mt-1">Chunking and embedding</p>
     </div>
   )
 }
 
 export default function IngestPanel() {
   const [isDragging, setIsDragging] = useState(false)
-  const [mode, setMode] = useState('file') // 'file' | 'text'
+  const [mode, setMode] = useState('file')
   const [pasteText, setPasteText] = useState('')
-  const [pasteFilename, setPasteFilename] = useState('pasted-text.txt')
+  const [pasteFilename, setPasteFilename] = useState('document.txt')
   const [lastResult, setLastResult] = useState(null)
   const fileInputRef = useRef(null)
 
@@ -45,6 +92,7 @@ export default function IngestPanel() {
   const { data: stats } = usePipelineStats()
 
   const handleFiles = useCallback(async (files) => {
+    setLastResult(null)
     for (const file of files) {
       try {
         const result = await ingestFile.mutateAsync({ file })
@@ -61,11 +109,9 @@ export default function IngestPanel() {
     handleFiles([...e.dataTransfer.files])
   }, [handleFiles])
 
-  const onDragOver = (e) => { e.preventDefault(); setIsDragging(true) }
-  const onDragLeave = () => setIsDragging(false)
-
   const handlePasteSubmit = async () => {
     if (!pasteText.trim()) return
+    setLastResult(null)
     try {
       const result = await ingestText.mutateAsync({ text: pasteText, filename: pasteFilename })
       setLastResult(result)
@@ -78,52 +124,61 @@ export default function IngestPanel() {
   const isLoading = ingestFile.isPending || ingestText.isPending
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Stats bar */}
       {stats && (
-        <div className="glass rounded-xl px-5 py-3 flex items-center gap-6 text-xs">
+        <div className="glass rounded-xl px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs">
           <div>
-            <span className="text-slate-500">Collection: </span>
+            <span className="text-slate-500">Collection </span>
             <span className="text-slate-300 font-mono">{stats.collection_name}</span>
           </div>
           <div>
-            <span className="text-slate-500">Chunks indexed: </span>
-            <span className="text-brand-400 font-semibold">{stats.document_count}</span>
+            <span className="text-slate-500">Chunks </span>
+            <span className="text-brand-400 font-semibold tabular-nums">{stats.document_count}</span>
           </div>
           <div>
-            <span className="text-slate-500">Model: </span>
-            <span className="text-slate-300">{stats.embedding_model}</span>
+            <span className="text-slate-500">Model </span>
+            <span className="text-slate-400 font-mono text-[11px]">{stats.embedding_model}</span>
           </div>
           <div>
-            <span className="text-slate-500">Retrieval: </span>
+            <span className="text-slate-500">Strategy </span>
             <span className="text-slate-300">MMR top-{stats.top_k}</span>
           </div>
         </div>
       )}
 
       {/* Mode toggle */}
-      <div className="flex rounded-lg overflow-hidden border border-slate-700 w-fit">
-        {['file', 'text'].map((m) => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={clsx(
-              'px-4 py-1.5 text-xs font-medium transition-colors capitalize',
-              mode === m ? 'bg-brand-500 text-white' : 'text-slate-400 hover:text-slate-200',
-            )}
-          >
-            {m === 'file' ? '📁 File Upload' : '✏️ Paste Text'}
-          </button>
-        ))}
+      <div className="flex rounded-lg overflow-hidden border border-slate-700/80 w-fit">
+        <button
+          onClick={() => setMode('file')}
+          className={clsx(
+            'flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors',
+            mode === 'file' ? 'bg-brand-500 text-white' : 'text-slate-400 hover:text-slate-200',
+          )}
+        >
+          <FileIcon className="w-3.5 h-3.5" />
+          File Upload
+        </button>
+        <button
+          onClick={() => setMode('text')}
+          className={clsx(
+            'flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-l border-slate-700/80',
+            mode === 'text' ? 'bg-brand-500 text-white' : 'text-slate-400 hover:text-slate-200',
+          )}
+        >
+          <TextIcon className="w-3.5 h-3.5" />
+          Paste Text
+        </button>
       </div>
 
       {/* File upload */}
       {mode === 'file' && (
         <div
           onDrop={onDrop}
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onClick={() => fileInputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
+          onDragLeave={() => setIsDragging(false)}
+          onClick={() => !isLoading && fileInputRef.current?.click()}
+          className="cursor-pointer"
         >
           <input
             ref={fileInputRef}
@@ -133,14 +188,7 @@ export default function IngestPanel() {
             className="hidden"
             onChange={(e) => handleFiles([...e.target.files])}
           />
-          {isLoading ? (
-            <div className="border-2 border-dashed border-brand-500/50 rounded-xl p-8 text-center">
-              <div className="text-2xl mb-2 animate-pulse">⚙️</div>
-              <p className="text-sm text-brand-300">Processing document…</p>
-            </div>
-          ) : (
-            <DropZone onFiles={handleFiles} isDragging={isDragging} />
-          )}
+          {isLoading ? <ProcessingState /> : <DropZone isDragging={isDragging} />}
         </div>
       )}
 
@@ -151,7 +199,7 @@ export default function IngestPanel() {
             type="text"
             value={pasteFilename}
             onChange={(e) => setPasteFilename(e.target.value)}
-            placeholder="Document name (e.g., my-corpus.txt)"
+            placeholder="Document identifier (e.g., my-corpus.txt)"
             className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-brand-500"
           />
           <textarea
@@ -164,33 +212,32 @@ export default function IngestPanel() {
           <button
             onClick={handlePasteSubmit}
             disabled={!pasteText.trim() || isLoading}
-            className="w-full py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition-colors disabled:opacity-50"
+            className="w-full py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
           >
+            {isLoading && <SpinnerIcon className="w-4 h-4" />}
             {isLoading ? 'Ingesting…' : 'Ingest Text'}
           </button>
         </div>
       )}
 
-      {/* Success result */}
+      {/* Success */}
       {lastResult && !isLoading && (
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs">
-          <p className="text-emerald-400 font-medium">✓ Ingested successfully</p>
-          <p className="text-slate-400 mt-1">
+          <p className="text-emerald-400 font-medium mb-0.5">Ingested successfully</p>
+          <p className="text-slate-400">
             <span className="font-mono">{lastResult.filename}</span>
             {' → '}
-            <span className="text-emerald-300">{lastResult.chunks_created} chunks</span>
+            <span className="text-emerald-300 font-semibold">{lastResult.chunks_created} chunks</span>
             {' in '}
-            <span className="font-mono">{lastResult.collection_name}</span>
+            <span className="font-mono text-slate-300">{lastResult.collection_name}</span>
           </p>
         </div>
       )}
 
       {/* Error */}
       {(ingestFile.isError || ingestText.isError) && (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs">
-          <p className="text-red-400">
-            {ingestFile.error?.message ?? ingestText.error?.message}
-          </p>
+        <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs text-red-400">
+          {ingestFile.error?.message ?? ingestText.error?.message}
         </div>
       )}
 

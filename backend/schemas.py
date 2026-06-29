@@ -1,4 +1,4 @@
-﻿"""schemas.py â€” Pydantic v2 request/response schemas."""
+"""schemas.py â€” Pydantic v2 request/response schemas."""
 from __future__ import annotations
 import uuid
 from datetime import datetime
@@ -95,6 +95,7 @@ class QueryResponse(BaseModel):
     retrieved_chunks: list[RetrievedChunk]
     model_used: str
     langsmith_trace_url: str | None = None
+    confidence: str = Field(default="medium", description="high | medium | low based on top chunk similarity")
 
 
 class IngestResponse(BaseModel):

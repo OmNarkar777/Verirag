@@ -1,4 +1,4 @@
-﻿"""rag/pipeline.py â€” End-to-end RAG pipeline with correct interface for routers."""
+"""rag/pipeline.py - End-to-end RAG pipeline."""
 import os
 from typing import Optional
 from loguru import logger
@@ -14,22 +14,65 @@ from backend.rag.retriever import RAGRetriever
 
 settings = get_settings()
 
-RAG_SYSTEM_PROMPT = """You are a precise assistant. Answer ONLY from the provided context.
-If the context lacks the answer, say so clearly. Do not use external knowledge.
+# Minimum similarity score for a chunk to be included in context.
+# Chunks below this threshold are too dissimilar to the query to be useful
+# and risk grounding the answer in irrelevant content.
+_MIN_CHUNK_SCORE = 0.10
 
-Context:
+RAG_SYSTEM_PROMPT = """You are a precise, trustworthy AI assistant. Your answers must be \
+strictly grounded in the provided context passages.
+
+Rules:
+1. Answer only from the context below. Never use external or prior knowledge.
+2. If the context is insufficient, say exactly: "I don't have enough context to answer this question."
+3. When you answer, cite the source document name in brackets, e.g. [attention-is-all-you-need.txt].
+4. Be concise and direct. Do not repeat the question.
+5. If the question is partially answerable, answer what you can and note what is missing.
+
+Context passages (ordered by relevance):
 {context}"""
 
 RAG_HUMAN_PROMPT = "Question: {question}"
 
 
+def _build_context(chunks: list[dict]) -> tuple[str, float]:
+    """
+    Build the context string from retrieved chunks and compute a confidence score.
+
+    Confidence is derived from the top chunk's similarity score:
+    - >= 0.70  high   (strong semantic match)
+    - >= 0.40  medium (partial match)
+    - <  0.40  low    (weak match — answer may be unreliable)
+
+    Returns (context_str, top_score).
+    """
+    filtered = [c for c in chunks if c.get("score", 0) >= _MIN_CHUNK_SCORE]
+    if not filtered:
+        return "", 0.0
+
+    parts = []
+    for i, c in enumerate(filtered):
+        score_pct = int(c["score"] * 100)
+        parts.append(
+            f"[Passage {i+1} | source: {c['source']} | relevance: {score_pct}%]\n{c['content']}"
+        )
+
+    return "\n\n---\n\n".join(parts), filtered[0]["score"]
+
+
+def _confidence_label(top_score: float) -> str:
+    if top_score >= 0.70:
+        return "high"
+    if top_score >= 0.40:
+        return "medium"
+    return "low"
+
+
 class RAGPipeline:
     def __init__(self, vectorstore: Optional[VectorStoreManager] = None):
-        # Use 'vector_store' attribute â€” routers reference pipeline.vector_store
         self.vector_store = vectorstore or get_vector_store()
         self.retriever = RAGRetriever(vector_store=self.vector_store)
 
-        # LangSmith env setup inside __init__ â€” avoids module-level import failures
         if settings.langchain_api_key:
             os.environ["LANGCHAIN_TRACING_V2"] = str(settings.langchain_tracing_v2).lower()
             os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
@@ -50,7 +93,7 @@ class RAGPipeline:
             self.llm = None
             self.prompt = None
             self.chain = None
-            logger.warning("GROQ_API_KEY not set — RAG query will return degraded response")
+            logger.warning("GROQ_API_KEY not set - RAG query will return degraded response")
 
     @traceable(name="rag_pipeline_query", run_type="chain")
     def query(
@@ -61,12 +104,10 @@ class RAGPipeline:
     ) -> dict:
         """
         Returns dict with keys:
-          question, answer, retrieved_chunks (list of dicts), model_used
-        These keys match exactly what routers/pipeline.py expects.
+          question, answer, retrieved_chunks, model_used, confidence
         """
         logger.info(f"RAG query | question={question[:80]}")
 
-        # Use keyword args â€” avoids positional-arg bug (top_k passed as collection_name)
         chunks = self.retriever.retrieve(
             query=question,
             collection_name=collection_name,
@@ -78,32 +119,36 @@ class RAGPipeline:
             return {
                 "question": question,
                 "answer": "RAG pipeline is not configured. Set GROQ_API_KEY in your environment variables.",
-                "retrieved_chunks": chunks if chunks else [],
+                "retrieved_chunks": [],
                 "model_used": "not-configured",
+                "confidence": "low",
             }
 
-        if not chunks:
-            logger.warning("No chunks retrieved")
+        context_str, top_score = _build_context(chunks)
+
+        if not context_str:
+            logger.warning("No usable chunks retrieved (all below threshold or empty)")
             return {
                 "question": question,
-                "answer": "I don't have enough context to answer this question.",
-                "retrieved_chunks": [],
+                "answer": "I don't have enough context to answer this question. Try uploading relevant documents first.",
+                "retrieved_chunks": chunks,
                 "model_used": settings.groq_model,
+                "confidence": "low",
             }
 
-        context_str = "\n\n".join(
-            f"[Chunk {i+1} from {c['source']}]:\n{c['content']}"
-            for i, c in enumerate(chunks)
-        )
-
+        confidence = _confidence_label(top_score)
         answer = self.chain.invoke({"context": context_str, "question": question})
 
-        logger.info(f"RAG response | chunks={len(chunks)} | answer_len={len(answer)}")
+        logger.info(
+            f"RAG response | chunks={len(chunks)} | top_score={top_score:.3f} | "
+            f"confidence={confidence} | answer_len={len(answer)}"
+        )
         return {
             "question": question,
             "answer": answer,
-            "retrieved_chunks": chunks,      # list of {content, source, score, metadata}
+            "retrieved_chunks": chunks,
             "model_used": settings.groq_model,
+            "confidence": confidence,
         }
 
     def ingest_text(
@@ -112,13 +157,11 @@ class RAGPipeline:
         filename: str,
         collection_name: Optional[str] = None,
     ) -> dict:
-        """Delegate to vectorstore â€” accepts collection_name for router compatibility."""
         return self.vector_store.ingest_text(
             text=text, filename=filename, collection_name=collection_name
         )
 
     def ingest_pdf(self, file_path: str, collection_name: Optional[str] = None) -> dict:
-        """Delegate to vectorstore."""
         return self.vector_store.ingest_pdf(
             file_path=file_path, collection_name=collection_name
         )
@@ -136,6 +179,6 @@ def get_pipeline() -> RAGPipeline:
             from fastapi import HTTPException
             raise HTTPException(
                 status_code=503,
-                detail=f"RAG pipeline unavailable: {e}. Check GROQ_API_KEY and HF_TOKEN.",
+                detail=f"RAG pipeline unavailable: {e}. Check GROQ_API_KEY.",
             ) from e
     return _pipeline

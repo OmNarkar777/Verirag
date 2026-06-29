@@ -52,7 +52,7 @@ function RegressionBanner({ run }) {
   return (
     <div className="rounded-xl border border-red-500/30 bg-red-950/30 px-5 py-4 mb-6">
       <p className="text-sm font-semibold text-red-300 mb-2">
-        ⚠ Regression detected in this run
+        Regression detected in this run
       </p>
       <div className="flex flex-wrap gap-3">
         {flagged.map(([metric, d]) => (

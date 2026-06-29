@@ -11,8 +11,9 @@ export function useEvalRuns({ limit = 50 } = {}) {
   return useQuery({
     queryKey: [...EVAL_RUNS_KEY, limit],
     queryFn: () => listEvalRuns({ limit }),
+    staleTime: 15_000,
     refetchInterval: ({ data } = {}) => {
-      const hasRunning = data?.some((r) => r.status === 'running')
+      const hasRunning = data?.some?.((r) => r.status === 'running')
       return hasRunning ? 8_000 : 30_000
     },
     retry: 1,
